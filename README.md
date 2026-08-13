@@ -159,7 +159,13 @@ See **[SECURITY.md](SECURITY.md)** for the full review notes, including the
 two things a reviewer should weigh: the executable is unsigned, and PyMuPDF is
 AGPL-licensed.
 
-## Licence
+## Licence and contributions
 
-AGPL-3.0, required because it links MuPDF (PyMuPDF). The app is free to use
-and share, and its source stays available — it is in this repository.
+AGPL-3.0 — see [LICENSE](LICENSE). This licence is required because the app
+links MuPDF (via PyMuPDF). The app is free to use and share, and its source
+stays available, which it is, right here.
+
+This repository is public to read but not open to direct changes. Nobody
+outside the repository owner can push to it. Anyone may read, clone or fork
+the code, and may open an issue or a pull request — but a pull request is only
+a proposal and changes nothing unless the owner reviews and merges it.
