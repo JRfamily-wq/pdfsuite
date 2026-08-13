@@ -9,6 +9,11 @@ type. Text reflows as you go, and when you're done the words are written back
 in the document's own font — including fonts embedded in the file, not a
 generic substitute.
 
+### ⬇️ [**Download the app**](https://github.com/jrreptiles000-wq/pdfsuite/releases/latest)
+
+Grab the `.zip` for your platform from the latest release, unzip it, and run it.
+No installer, no Python, no account, no internet connection needed.
+
 ![Screenshot](docs/screenshot.png)
 
 ## Features
@@ -48,16 +53,27 @@ generic substitute.
 
 ## Getting the app
 
-### Option A — download a prebuilt executable
+### Option A — download a prebuilt executable (easiest)
 
-Every push builds all three platforms. On GitHub go to
-**Actions → "Build PDF Studio executables" → the latest run → Artifacts**, and
-download `PDFStudio-Windows` (or `-macOS` / `-Linux`). Unzip it and run
-`PDFStudio.exe` — no installation, no dependencies. Each build also publishes
-`SHA256SUMS.txt` so you can verify what you downloaded.
+Go to **[Releases](https://github.com/jrreptiles000-wq/pdfsuite/releases/latest)**
+and download the zip for your platform. No GitHub account needed.
 
-Windows shows a SmartScreen warning for unsigned apps the first time:
-choose **More info → Run anyway**.
+| Platform | File | Run |
+|---|---|---|
+| Windows | `PDFStudio-…-Windows.zip` | `PDFStudio.exe` |
+| macOS | `PDFStudio-…-macOS.zip` | `PDFStudio` |
+| Linux | `PDFStudio-…-Linux.zip` | `PDFStudio` |
+
+Each release ships `SHA256SUMS.txt` so you can verify a download against what
+CI produced.
+
+The app is not code-signed, so the first launch needs one extra click:
+**Windows** — SmartScreen warns, choose *More info → Run anyway*.
+**macOS** — right-click the app, choose *Open*, then confirm.
+
+(Every push also builds executables as Actions artifacts, but those need a
+signed-in GitHub account and expire after 90 days — releases are the ones to
+share.)
 
 ### Option B — build it yourself
 
