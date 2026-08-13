@@ -1,16 +1,21 @@
-"""Toolbar/window icons drawn at runtime with QPainter — no binary assets."""
+"""Vector icons drawn at runtime — no image assets to ship or lose."""
 
 from __future__ import annotations
+
+import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (QColor, QFont, QIcon, QPainter, QPainterPath, QPen,
                            QPixmap, QPolygonF, QTransform)
 
-INK = QColor(70, 74, 82)
-ACCENT = QColor(200, 40, 40)
+STROKE = QColor("#dfe3ea")
+ACCENT = QColor("#4c8dff")
+WARM = QColor("#ffc233")
+DANGER = QColor("#e0555f")
+SIZE = 22
 
 
-def _painter(size: int = 24):
+def _canvas(size: int = SIZE):
     pix = QPixmap(size, size)
     pix.fill(Qt.transparent)
     painter = QPainter(pix)
@@ -18,193 +23,376 @@ def _painter(size: int = 24):
     return pix, painter
 
 
-def _pen(color=INK, width=1.8):
-    pen = QPen(color)
+def _pen(color=None, width=1.7, cap=Qt.RoundCap):
+    pen = QPen(color or STROKE)
     pen.setWidthF(width)
-    pen.setCapStyle(Qt.RoundCap)
+    pen.setCapStyle(cap)
     pen.setJoinStyle(Qt.RoundJoin)
     return pen
 
 
-def app_icon() -> QIcon:
-    icon = QIcon()
-    for size in (16, 32, 64, 128, 256):
-        pix = QPixmap(size, size)
-        pix.fill(Qt.transparent)
-        painter = QPainter(pix)
-        painter.setRenderHint(QPainter.Antialiasing)
-        margin = size * 0.06
-        rect = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(198, 40, 40))
-        painter.drawRoundedRect(rect, size * 0.18, size * 0.18)
-        painter.setPen(QColor("white"))
-        font = QFont("Arial", int(size * 0.34), QFont.Bold)
-        painter.setFont(font)
-        painter.drawText(rect, Qt.AlignCenter, "PDF")
-        painter.end()
-        icon.addPixmap(pix)
-    return icon
+def _text_icon(painter, letter, family="DejaVu Sans", size=12, bold=True,
+               italic=False, rect=None, color=None):
+    font = QFont(family)
+    font.setPixelSize(size)
+    font.setBold(bold)
+    font.setItalic(italic)
+    painter.setFont(font)
+    painter.setPen(color or STROKE)
+    painter.drawText(rect or QRectF(0, 0, SIZE, SIZE), Qt.AlignCenter, letter)
 
 
-def tool_icon(name: str) -> QIcon:
-    pix, p = _painter()
+def _arrow_head(painter, tip: QPointF, angle: float, size=6.0):
+    for spread in (0.5, -0.5):
+        painter.drawLine(tip, QPointF(tip.x() - size * math.cos(angle + spread),
+                                      tip.y() - size * math.sin(angle + spread)))
+
+
+def icon(name: str) -> QIcon:
+    pix, p = _canvas()
     p.setPen(_pen())
     p.setBrush(Qt.NoBrush)
+    S = SIZE
 
     if name == "select":
-        path = QPainterPath(QPointF(7, 4))
-        for pt in [(7, 18), (11, 14.5), (14, 20), (16.2, 18.8), (13.4, 13.4), (18, 13)]:
+        path = QPainterPath(QPointF(6, 3))
+        for pt in [(6, 16.5), (9.6, 13.2), (12.3, 18.6), (14.4, 17.5),
+                   (11.8, 12.3), (16.4, 11.8)]:
             path.lineTo(QPointF(*pt))
         path.closeSubpath()
-        p.setBrush(QColor(INK))
+        p.setBrush(STROKE)
+        p.setPen(_pen(width=1.1))
         p.drawPath(path)
 
-    elif name == "text":
-        font = QFont("Georgia", 13, QFont.Bold)
-        p.setFont(font)
-        p.drawText(QRectF(0, 0, 24, 24), Qt.AlignCenter, "T")
-        p.drawLine(QPointF(5, 20.5), QPointF(19, 20.5))
+    elif name == "textselect":
+        p.drawLine(QPointF(11, 4), QPointF(11, 18))
+        p.drawLine(QPointF(8.5, 4), QPointF(13.5, 4))
+        p.drawLine(QPointF(8.5, 18), QPointF(13.5, 18))
+        p.setPen(_pen(ACCENT, 1.4))
+        p.drawLine(QPointF(4, 8), QPointF(4, 14))
+        p.drawLine(QPointF(18, 8), QPointF(18, 14))
 
     elif name == "edittext":
-        font = QFont("Georgia", 12, QFont.Bold)
-        p.setFont(font)
-        p.drawText(QRectF(1, 1, 16, 20), Qt.AlignCenter, "A")
-        p.setPen(_pen(ACCENT, 2.0))
-        p.drawLine(QPointF(13, 18), QPointF(20, 11))
-        p.drawLine(QPointF(20, 11), QPointF(21.5, 12.5))
-        p.drawLine(QPointF(21.5, 12.5), QPointF(14.5, 19.5))
+        _text_icon(p, "A", size=13, rect=QRectF(-3, -2, S, S))
+        p.setPen(_pen(ACCENT, 1.8))
+        path = QPainterPath(QPointF(12, 16.5))
+        path.lineTo(QPointF(18.2, 10.2))
+        path.lineTo(QPointF(19.8, 11.8))
+        path.lineTo(QPointF(13.6, 18.1))
+        path.closeSubpath()
+        p.setBrush(QColor(76, 141, 255, 60))
+        p.drawPath(path)
+        p.drawLine(QPointF(12, 16.5), QPointF(11.4, 18.7))
+        p.drawLine(QPointF(11.4, 18.7), QPointF(13.6, 18.1))
+
+    elif name == "text":
+        p.drawLine(QPointF(4.5, 6.5), QPointF(4.5, 4.5))
+        p.drawLine(QPointF(4.5, 4.5), QPointF(17.5, 4.5))
+        p.drawLine(QPointF(17.5, 4.5), QPointF(17.5, 6.5))
+        p.drawLine(QPointF(11, 4.5), QPointF(11, 17.5))
+        p.drawLine(QPointF(8, 17.5), QPointF(14, 17.5))
 
     elif name == "highlight":
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 214, 0, 170))
-        p.drawRect(QRectF(4, 9, 16, 8))
-        p.setPen(_pen())
-        p.drawLine(QPointF(4, 6), QPointF(20, 6))
-        p.drawLine(QPointF(4, 20), QPointF(20, 20))
+        p.setBrush(QColor(255, 210, 60, 190))
+        p.drawRect(QRectF(3.5, 9, 15, 6.5))
+        p.setPen(_pen(width=1.5))
+        p.drawLine(QPointF(3.5, 6), QPointF(18.5, 6))
+        p.drawLine(QPointF(3.5, 18.5), QPointF(18.5, 18.5))
+
+    elif name == "underline":
+        _text_icon(p, "U", size=12, rect=QRectF(0, -3, S, S))
+        p.setPen(_pen(ACCENT, 2.0))
+        p.drawLine(QPointF(5, 17.5), QPointF(17, 17.5))
+
+    elif name == "strikeout":
+        _text_icon(p, "S", size=12, rect=QRectF(0, 0, S, S))
+        p.setPen(_pen(DANGER, 2.0))
+        p.drawLine(QPointF(4, 11), QPointF(18, 11))
 
     elif name == "rect":
-        p.drawRect(QRectF(4.5, 6.5, 15, 11))
+        p.drawRect(QRectF(3.5, 5.5, 15, 11))
 
     elif name == "ellipse":
-        p.drawEllipse(QRectF(4.5, 6, 15, 12))
+        p.drawEllipse(QRectF(3.5, 5.5, 15, 11))
 
     elif name == "line":
-        p.drawLine(QPointF(5, 19), QPointF(19, 5))
+        p.drawLine(QPointF(4.5, 17.5), QPointF(17.5, 4.5))
 
     elif name == "arrow":
-        p.drawLine(QPointF(5, 19), QPointF(18, 6))
-        p.drawLine(QPointF(18, 6), QPointF(12.5, 7.5))
-        p.drawLine(QPointF(18, 6), QPointF(16.5, 11.5))
+        p.drawLine(QPointF(4.5, 17.5), QPointF(17, 5))
+        _arrow_head(p, QPointF(17, 5), math.atan2(-12.5, 12.5), 7)
 
     elif name == "ink":
-        path = QPainterPath(QPointF(4, 17))
-        path.cubicTo(QPointF(8, 6), QPointF(11, 22), QPointF(15, 10))
-        path.cubicTo(QPointF(17, 5), QPointF(19, 9), QPointF(20, 7))
+        path = QPainterPath(QPointF(3.5, 15.5))
+        path.cubicTo(QPointF(7, 5.5), QPointF(10, 20), QPointF(13.5, 9.5))
+        path.cubicTo(QPointF(15.5, 4.5), QPointF(17, 8.5), QPointF(18.5, 6.5))
         p.drawPath(path)
 
     elif name == "whiteout":
-        p.setBrush(QColor("white"))
-        p.drawRect(QRectF(4.5, 6.5, 15, 11))
-        p.setPen(_pen(QColor(160, 164, 170), 1.2))
-        p.drawLine(QPointF(7, 12), QPointF(17, 12))
+        p.setBrush(QColor("#ffffff"))
+        p.setPen(_pen(QColor("#8b93a1"), 1.3))
+        p.drawRect(QRectF(3.5, 6.5, 15, 9))
+        p.setPen(_pen(QColor("#c3c9d4"), 1.2))
+        p.drawLine(QPointF(6, 11), QPointF(16, 11))
 
     elif name == "redact":
-        p.setBrush(QColor(30, 30, 34))
-        p.drawRect(QRectF(4.5, 6.5, 15, 11))
+        p.setBrush(QColor("#14161a"))
+        p.setPen(_pen(width=1.3))
+        p.drawRect(QRectF(3.5, 6.5, 15, 9))
 
     elif name == "image":
-        p.drawRect(QRectF(4, 5.5, 16, 13))
-        p.setBrush(QColor(INK))
-        p.drawEllipse(QRectF(7, 8, 3, 3))
-        path = QPainterPath(QPointF(5.5, 17.5))
-        path.lineTo(QPointF(10.5, 12))
-        path.lineTo(QPointF(13.5, 15))
-        path.lineTo(QPointF(16.5, 11.5))
-        path.lineTo(QPointF(19, 17.5))
-        path.closeSubpath()
+        p.drawRoundedRect(QRectF(3.5, 4.5, 15, 13), 2, 2)
+        p.setBrush(WARM)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QRectF(6.5, 7.5, 3, 3))
+        p.setPen(_pen(width=1.5))
+        p.setBrush(Qt.NoBrush)
+        path = QPainterPath(QPointF(4.5, 16))
+        path.lineTo(QPointF(9, 11))
+        path.lineTo(QPointF(12, 14))
+        path.lineTo(QPointF(15, 10.5))
+        path.lineTo(QPointF(17.5, 16))
         p.drawPath(path)
 
     elif name == "note":
-        p.drawRoundedRect(QRectF(4, 5, 16, 12), 2.5, 2.5)
-        path = QPainterPath(QPointF(9, 17))
-        path.lineTo(QPointF(8, 21))
-        path.lineTo(QPointF(12.5, 17))
-        p.setBrush(QColor(INK))
+        p.setBrush(QColor(255, 202, 64, 60))
+        p.drawRoundedRect(QRectF(3.5, 4.5, 15, 11), 2.5, 2.5)
+        p.setBrush(Qt.NoBrush)
+        path = QPainterPath(QPointF(7.5, 15.5))
+        path.lineTo(QPointF(6.5, 19.5))
+        path.lineTo(QPointF(11, 15.5))
         p.drawPath(path)
+        p.setPen(_pen(width=1.2))
+        p.drawLine(QPointF(6.5, 8), QPointF(15.5, 8))
+        p.drawLine(QPointF(6.5, 11.5), QPointF(13, 11.5))
 
-    elif name == "zoom-in" or name == "zoom-out":
-        p.drawEllipse(QRectF(4.5, 4.5, 11, 11))
-        p.drawLine(QPointF(14.2, 14.2), QPointF(19.5, 19.5))
-        p.drawLine(QPointF(7.5, 10), QPointF(12.5, 10))
+    elif name in ("zoom-in", "zoom-out"):
+        p.drawEllipse(QRectF(3.5, 3.5, 11, 11))
+        p.setPen(_pen(width=2.0))
+        p.drawLine(QPointF(13.2, 13.2), QPointF(18.5, 18.5))
+        p.setPen(_pen(width=1.6))
+        p.drawLine(QPointF(6.4, 9), QPointF(11.6, 9))
         if name == "zoom-in":
-            p.drawLine(QPointF(10, 7.5), QPointF(10, 12.5))
+            p.drawLine(QPointF(9, 6.4), QPointF(9, 11.6))
 
     elif name == "fit-width":
-        p.drawRect(QRectF(4, 5, 16, 14))
-        p.setPen(_pen(ACCENT, 1.6))
-        p.drawLine(QPointF(6.5, 12), QPointF(17.5, 12))
-        p.drawLine(QPointF(6.5, 12), QPointF(9, 9.5))
-        p.drawLine(QPointF(6.5, 12), QPointF(9, 14.5))
-        p.drawLine(QPointF(17.5, 12), QPointF(15, 9.5))
-        p.drawLine(QPointF(17.5, 12), QPointF(15, 14.5))
+        p.drawRect(QRectF(3.5, 4.5, 15, 13))
+        p.setPen(_pen(ACCENT, 1.5))
+        p.drawLine(QPointF(6, 11), QPointF(16, 11))
+        _arrow_head(p, QPointF(6, 11), math.pi, 4)
+        _arrow_head(p, QPointF(16, 11), 0, 4)
 
     elif name == "fit-page":
-        p.drawRect(QRectF(4, 4, 16, 16))
-        p.setPen(_pen(ACCENT, 1.6))
-        p.drawRect(QRectF(8, 8, 8, 8))
+        p.drawRect(QRectF(3.5, 3.5, 15, 15))
+        p.setPen(_pen(ACCENT, 1.5))
+        p.drawRect(QRectF(7.5, 7.5, 7, 7))
 
-    elif name == "undo" or name == "redo":
-        path = QPainterPath(QPointF(6, 10))
-        path.cubicTo(QPointF(9, 6.5), QPointF(15, 6.5), QPointF(18, 10))
-        path.cubicTo(QPointF(19.5, 12), QPointF(19.5, 14.5), QPointF(18, 16.5))
+    elif name in ("undo", "redo"):
+        path = QPainterPath(QPointF(5.5, 9.5))
+        path.cubicTo(QPointF(8.5, 5.5), QPointF(14.5, 5.5), QPointF(17, 9.5))
+        path.cubicTo(QPointF(18.5, 11.8), QPointF(18.2, 14.5), QPointF(16.5, 16.5))
         p.drawPath(path)
-        p.setBrush(QColor(INK))
-        arrow = QPolygonF([QPointF(6, 10), QPointF(5, 5), QPointF(11, 7)])
-        p.drawPolygon(arrow)
+        p.setBrush(STROKE)
+        p.setPen(Qt.NoPen)
+        p.drawPolygon(QPolygonF([QPointF(5.5, 10.5), QPointF(3.2, 5.2),
+                                 QPointF(9.6, 6.4)]))
         p.end()
         if name == "redo":
             return QIcon(pix.transformed(QTransform(-1, 0, 0, 1, 0, 0)))
         return QIcon(pix)
 
-    elif name == "open":
-        p.drawRect(QRectF(4, 8, 16, 11))
-        p.drawLine(QPointF(4, 8), QPointF(9, 8))
-        p.drawLine(QPointF(9, 8), QPointF(11, 5.5))
-        p.drawLine(QPointF(11, 5.5), QPointF(16, 5.5))
-        p.drawLine(QPointF(16, 5.5), QPointF(16, 8))
-
-    elif name == "save":
-        p.drawRoundedRect(QRectF(4.5, 4.5, 15, 15), 1.5, 1.5)
-        p.drawRect(QRectF(8, 4.5, 8, 5.5))
-        p.drawRect(QRectF(7.5, 13, 9, 6.5))
+    elif name in ("rotate-left", "rotate-right"):
+        p.drawArc(QRectF(4.5, 5, 13, 13), 30 * 16, 260 * 16)
+        p.setBrush(STROKE)
+        p.setPen(Qt.NoPen)
+        p.drawPolygon(QPolygonF([QPointF(16.6, 4.2), QPointF(18.6, 9.6),
+                                 QPointF(13.2, 8.4)]))
+        p.end()
+        if name == "rotate-left":
+            return QIcon(pix.transformed(QTransform(-1, 0, 0, 1, 0, 0)))
+        return QIcon(pix)
 
     elif name == "new":
-        p.drawRect(QRectF(6, 4, 12, 16))
+        p.drawPath(_doc_path())
         p.setPen(_pen(ACCENT, 1.8))
-        p.drawLine(QPointF(12, 9), QPointF(12, 15))
-        p.drawLine(QPointF(9, 12), QPointF(15, 12))
+        p.drawLine(QPointF(11, 9.5), QPointF(11, 15.5))
+        p.drawLine(QPointF(8, 12.5), QPointF(14, 12.5))
+
+    elif name == "open":
+        p.drawLine(QPointF(3.5, 16.5), QPointF(3.5, 6))
+        p.drawLine(QPointF(3.5, 6), QPointF(8.5, 6))
+        p.drawLine(QPointF(8.5, 6), QPointF(10.5, 8.5))
+        p.drawLine(QPointF(10.5, 8.5), QPointF(16.5, 8.5))
+        path = QPainterPath(QPointF(3.5, 16.5))
+        path.lineTo(QPointF(6.5, 10.5))
+        path.lineTo(QPointF(19.5, 10.5))
+        path.lineTo(QPointF(16.5, 16.5))
+        path.closeSubpath()
+        p.drawPath(path)
+
+    elif name == "save":
+        p.drawRoundedRect(QRectF(3.5, 3.5, 15, 15), 2, 2)
+        p.setBrush(QColor("#dfe3ea"))
+        p.setPen(Qt.NoPen)
+        p.drawRect(QRectF(7, 3.5, 8, 5))
+        p.setPen(_pen(width=1.4))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(6.5, 12, 9, 6.5))
 
     elif name == "print":
-        p.drawRect(QRectF(6, 4, 12, 5))
-        p.drawRoundedRect(QRectF(4, 9, 16, 8), 1.5, 1.5)
-        p.drawRect(QRectF(7, 14, 10, 6))
+        p.drawRect(QRectF(6, 3.5, 10, 4))
+        p.drawRoundedRect(QRectF(3.5, 7.5, 15, 7.5), 1.5, 1.5)
+        p.setBrush(QColor("#1c1f24"))
+        p.drawRect(QRectF(6.5, 12.5, 9, 6))
 
     elif name == "find":
-        p.drawEllipse(QRectF(4.5, 4.5, 11, 11))
-        p.drawLine(QPointF(14.2, 14.2), QPointF(19.5, 19.5))
+        p.drawEllipse(QRectF(4, 4, 10.5, 10.5))
+        p.setPen(_pen(width=2.0))
+        p.drawLine(QPointF(13.4, 13.4), QPointF(18.5, 18.5))
+
+    elif name == "pages":
+        p.drawRect(QRectF(3.5, 4.5, 6.5, 6))
+        p.drawRect(QRectF(3.5, 12, 6.5, 6))
+        p.setPen(_pen(QColor("#8b93a1"), 1.4))
+        p.drawLine(QPointF(12.5, 6.5), QPointF(18.5, 6.5))
+        p.drawLine(QPointF(12.5, 9.5), QPointF(18.5, 9.5))
+        p.drawLine(QPointF(12.5, 14), QPointF(18.5, 14))
+        p.drawLine(QPointF(12.5, 17), QPointF(18.5, 17))
+
+    elif name == "outline":
+        for i, y in enumerate((5.5, 10, 14.5)):
+            p.setBrush(STROKE)
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(QRectF(4 + i * 1.5, y - 1.2, 2.4, 2.4))
+            p.setPen(_pen(width=1.4))
+            p.drawLine(QPointF(8.5 + i * 1.5, y), QPointF(18.5, y))
+
+    elif name == "merge":
+        p.drawRect(QRectF(3.5, 4.5, 8, 10))
+        p.setPen(_pen(ACCENT, 1.6))
+        p.drawRect(QRectF(10.5, 7.5, 8, 10))
+
+    elif name == "delete":
+        p.drawLine(QPointF(4.5, 6.5), QPointF(17.5, 6.5))
+        p.drawLine(QPointF(9, 6.5), QPointF(9, 4.5))
+        p.drawLine(QPointF(9, 4.5), QPointF(13, 4.5))
+        p.drawLine(QPointF(13, 4.5), QPointF(13, 6.5))
+        path = QPainterPath(QPointF(6, 6.5))
+        path.lineTo(QPointF(7, 18))
+        path.lineTo(QPointF(15, 18))
+        path.lineTo(QPointF(16, 6.5))
+        p.drawPath(path)
+
+    elif name == "extract":
+        p.drawRect(QRectF(3.5, 4.5, 9, 12))
+        p.setPen(_pen(ACCENT, 1.6))
+        p.drawLine(QPointF(14, 10.5), QPointF(19.5, 10.5))
+        _arrow_head(p, QPointF(19.5, 10.5), 0, 5)
+
+    elif name == "bold":
+        _text_icon(p, "B", size=14)
+
+    elif name == "italic":
+        _text_icon(p, "I", size=14, italic=True)
+
+    elif name == "copy":
+        p.drawRect(QRectF(3.5, 3.5, 10, 12))
+        p.setPen(_pen(ACCENT, 1.5))
+        p.drawRect(QRectF(8, 7, 10, 12))
+
+    elif name == "watermark":
+        p.setPen(_pen(QColor("#8b93a1"), 1.4))
+        p.drawRect(QRectF(3.5, 3.5, 15, 15))
+        font = QFont("DejaVu Sans")
+        font.setPixelSize(9)
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QColor(140, 150, 165))
+        p.save()
+        p.translate(11, 11)
+        p.rotate(-35)
+        p.drawText(QRectF(-9, -5, 18, 10), Qt.AlignCenter, "AB")
+        p.restore()
+
+    elif name == "numbering":
+        p.setPen(_pen(QColor("#8b93a1"), 1.4))
+        p.drawRect(QRectF(4.5, 3, 13, 16))
+        font = QFont("DejaVu Sans")
+        font.setPixelSize(8)
+        p.setFont(font)
+        p.setPen(STROKE)
+        p.drawText(QRectF(4.5, 12, 13, 6), Qt.AlignCenter, "1")
+        p.setPen(_pen(QColor("#8b93a1"), 1.1))
+        for y in (6.5, 9):
+            p.drawLine(QPointF(7, y), QPointF(15, y))
+
+    elif name == "lock":
+        p.drawRoundedRect(QRectF(5, 9.5, 12, 9), 1.8, 1.8)
+        p.drawArc(QRectF(7.5, 3.5, 7, 10), 0, 180 * 16)
+        p.setBrush(STROKE)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QRectF(9.9, 12.4, 2.2, 2.2))
+
+    elif name == "props":
+        p.drawRoundedRect(QRectF(4.5, 3.5, 13, 15), 2, 2)
+        p.setPen(_pen(QColor("#8b93a1"), 1.3))
+        for y in (7.5, 11, 14.5):
+            p.drawLine(QPointF(7.5, y), QPointF(14.5, y))
+
+    elif name == "sidebar":
+        p.drawRoundedRect(QRectF(3.5, 4.5, 15, 13), 2, 2)
+        p.setBrush(QColor("#8b93a1"))
+        p.setPen(Qt.NoPen)
+        p.drawRect(QRectF(3.5, 4.5, 5, 13))
 
     p.end()
     return QIcon(pix)
 
 
-def color_swatch(color) -> QIcon:
-    pix = QPixmap(24, 24)
-    pix.fill(Qt.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setPen(_pen(QColor(120, 120, 126), 1.2))
+def _doc_path() -> QPainterPath:
+    path = QPainterPath(QPointF(5.5, 3.5))
+    path.lineTo(QPointF(13, 3.5))
+    path.lineTo(QPointF(16.5, 7))
+    path.lineTo(QPointF(16.5, 18.5))
+    path.lineTo(QPointF(5.5, 18.5))
+    path.closeSubpath()
+    return path
+
+
+def color_swatch(color, size: int = SIZE) -> QIcon:
+    pix, p = _canvas(size)
+    p.setPen(_pen(QColor("#6c7482"), 1.2))
     p.setBrush(QColor(color))
-    p.drawRoundedRect(QRectF(4, 4, 16, 16), 3, 3)
+    p.drawRoundedRect(QRectF(3, 4, size - 6, size - 9), 3, 3)
     p.end()
     return QIcon(pix)
+
+
+def app_icon() -> QIcon:
+    result = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        pix = QPixmap(size, size)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing)
+        margin = size * 0.07
+        rect = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#c8323c"))
+        p.drawRoundedRect(rect, size * 0.19, size * 0.19)
+        # folded corner
+        fold = QPolygonF([QPointF(rect.right() - size * 0.3, rect.top()),
+                          QPointF(rect.right(), rect.top() + size * 0.3),
+                          QPointF(rect.right(), rect.top())])
+        p.setBrush(QColor(0, 0, 0, 45))
+        p.drawPolygon(fold)
+        font = QFont("DejaVu Sans")
+        font.setPixelSize(max(6, int(size * 0.33)))
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QColor("#ffffff"))
+        p.drawText(rect.adjusted(0, size * 0.05, 0, 0), Qt.AlignCenter, "PDF")
+        p.end()
+        result.addPixmap(pix)
+    return result

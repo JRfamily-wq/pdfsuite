@@ -119,15 +119,44 @@ def main():
     doc.add_shape(0, "ellipse", fitz.Rect(240, 300, 340, 360), color=(0, 0, 1))
     doc.add_line(0, fitz.Point(100, 400), fitz.Point(300, 430), arrow=True)
     doc.add_ink(0, [(100, 500), (140, 520), (180, 500), (220, 530)], color=(0, 0.5, 0))
-    doc.add_textbox(0, fitz.Rect(100, 560, 320, 600), "Added text box", fontsize=14)
     doc.add_note(0, fitz.Point(400, 300), "A sticky note")
-    annots = list(doc.page(0).annots())
-    assert len(annots) == 7, f"expected 7 annots, got {len(annots)}"
+    page0 = doc.page(0)
+    assert len(list(page0.annots())) == 6, "expected 6 annotations"
     hit = doc.annot_at(0, fitz.Point(160, 320))
     assert hit is not None
-    assert doc.delete_annot(0, hit[0])
-    assert len(list(doc.page(0).annots())) == 6
     print("annotations: ok")
+
+    # -- moving and resizing annotations
+    xref = hit[0]
+    before = fitz.Rect(doc.annot_rect(0, xref))
+    doc.move_annot(0, xref, 40, 25)
+    after = fitz.Rect(doc.annot_rect(0, xref))
+    assert abs((after.x0 - before.x0) - 40) < 0.1, f"{before} -> {after}"
+    assert abs((after.y0 - before.y0) - 25) < 0.1
+    # a move must not change the size, even after repeated drags
+    assert abs(after.width - before.width) < 0.1, "move changed the width"
+    for _ in range(5):
+        doc.move_annot(0, xref, 6, 0)
+    drifted = doc.annot_rect(0, xref)
+    assert abs(drifted.width - before.width) < 0.1, \
+        f"repeated moves inflated the shape: {before.width} -> {drifted.width}"
+    assert abs(drifted.x0 - (after.x0 + 30)) < 0.1
+    after = fitz.Rect(drifted)
+    doc.resize_annot(0, xref, fitz.Rect(after.x0, after.y0, after.x1 + 60, after.y1 + 30))
+    grown = doc.annot_rect(0, xref)
+    assert grown.width > after.width + 40
+    assert doc.delete_annot(0, xref)
+    assert len(list(doc.page(0).annots())) == 5
+    print("annotation move/resize/delete: ok")
+
+    # -- text markup over several word rects
+    words = doc.page(1).get_text("words")[:3]
+    if words:
+        doc.add_text_markup(1, "underline", [fitz.Rect(w[:4]) for w in words])
+        kinds = [a.type[1] for a in doc.page(1).annots()]
+        assert any("Underline" in k for k in kinds), kinds
+        doc.undo()
+    print("text markup: ok")
 
     # -- whiteout removes text underneath
     hits = doc.search_page(1, "PAGE-2")
@@ -139,15 +168,17 @@ def main():
     assert doc.search_page(1, "PAGE-2")
     print("whiteout/redact: ok")
 
-    # -- edit text block
-    block = doc.block_at(0, fitz.Point(100, 210))
-    assert block is not None, "paragraph block not found"
-    assert "quick brown fox" in PdfDocument.block_text(block)
-    doc.replace_block_text(0, block, "Edited paragraph text, rewritten by the test.")
+    # -- inline text edit through the editable-block API
+    editable = doc.editable_at(0, fitz.Point(100, 210))
+    assert editable is not None, "paragraph block not found"
+    assert "quick brown fox" in editable.text
+    editable.select_all()
+    editable.insert("Edited paragraph text, rewritten by the test.")
+    doc.commit_text(0, editable, erase_rect=editable.source_rect)
     text = doc.page_text(0)
     assert "quick brown fox" not in text
     assert "Edited paragraph" in text
-    print("edit text: ok")
+    print("inline text edit: ok")
 
     # -- watermark + page numbers + metadata
     doc.add_watermark("DRAFT", fontsize=40, opacity=0.2)

@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import fitz  # PyMuPDF
 
+from .fonts import FontResolver
+from .textengine import EditableText
+
 A4 = (595.0, 842.0)
 LETTER = (612.0, 792.0)
 LEGAL = (612.0, 1008.0)
@@ -42,6 +45,7 @@ class PdfDocument:
         self.dirty = False
         self._undo: list[bytes] = []
         self._redo: list[bytes] = []
+        self.fonts: FontResolver | None = None
         # callback(structural: bool) — structural means page count/order/size changed
         self.on_changed = None
 
@@ -91,6 +95,7 @@ class PdfDocument:
         self.doc = doc
         self.path = path
         self.dirty = dirty
+        self.fonts = FontResolver(doc)
         self._undo.clear()
         self._redo.clear()
         self._notify(True)
@@ -165,11 +170,17 @@ class PdfDocument:
                 old.close()
             except Exception:
                 pass
+        if self.fonts is None:
+            self.fonts = FontResolver(self.doc)
+        else:
+            self.fonts.reset(self.doc)
         self.dirty = True
         self._notify(True)
 
     def _done(self, structural: bool):
         self.dirty = True
+        if structural and self.fonts is not None:
+            self.fonts.invalidate_pages()
         self._notify(structural)
 
     def _notify(self, structural: bool):
@@ -306,20 +317,6 @@ class PdfDocument:
         annot.update()
         self._done(False)
 
-    def add_textbox(self, index: int, rect: fitz.Rect, text: str,
-                    fontsize: float = 14.0, color=BLACK):
-        self._snapshot()
-        page = self.doc[index]
-        try:
-            annot = page.add_freetext_annot(
-                rect, text, fontsize=fontsize, fontname="helv",
-                text_color=color, fill_color=None, border_color=None)
-        except TypeError:  # older/newer signature differences
-            annot = page.add_freetext_annot(rect, text, fontsize=fontsize,
-                                            text_color=color)
-        annot.update()
-        self._done(False)
-
     def add_note(self, index: int, point: fitz.Point, text: str):
         self._snapshot()
         page = self.doc[index]
@@ -380,64 +377,172 @@ class PdfDocument:
         self._done(False)
         return True
 
-    # ------------------------------------------------------------- text edit
-
-    def block_at(self, index: int, point: fitz.Point):
-        """Text block under point (dict with 'bbox' and 'lines'), or None."""
-        data = self.doc[index].get_text("dict")
-        for block in data.get("blocks", []):
-            if block.get("type") != 0:
-                continue
-            if fitz.Rect(block["bbox"]).contains(point):
-                return block
-        return None
+    # -------------------------------------------------------- inline editing
 
     @staticmethod
-    def block_text(block) -> str:
-        lines = []
-        for line in block.get("lines", []):
-            lines.append("".join(span.get("text", "") for span in line.get("spans", [])))
-        return "\n".join(lines)
+    def _line_size(line: dict) -> float:
+        sizes = [float(s.get("size", 11.0)) for s in line.get("spans", [])]
+        return max(sizes) if sizes else 11.0
 
-    def replace_block_text(self, index: int, block, new_text: str):
-        """Approximate text editing: redact the block, re-insert new text in its
-        place at the detected font size/colour. Uses Helvetica, so exotic fonts
-        will change appearance — good enough for corrections and small edits."""
-        self._snapshot()
-        page = self.doc[index]
-        rect = fitz.Rect(block["bbox"])
-        fontsize, color = 11.0, BLACK
-        try:
-            span = block["lines"][0]["spans"][0]
-            fontsize = float(span.get("size", 11.0))
-            color = fitz.sRGB_to_pdf(span.get("color", 0))
-        except Exception:
-            pass
-        shrink = fitz.Rect(rect.x0 + 0.5, rect.y0 + 0.5, rect.x1 - 0.5, rect.y1 - 0.5)
-        page.add_redact_annot(shrink)
-        try:
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-        except TypeError:
-            page.apply_redactions()
-        if new_text.strip():
-            box = fitz.Rect(rect.x0, rect.y0, rect.x1 + 2, rect.y1 + 2)
-            size = fontsize
-            while size >= 6.0:
-                try:
-                    leftover = page.insert_textbox(box, new_text, fontsize=size,
-                                                   fontname="helv", color=color)
-                except ValueError:
-                    leftover = -1
-                if leftover >= 0:
-                    break
-                size -= 0.5
+    @classmethod
+    def _split_block(cls, block: dict) -> list[dict]:
+        """Break a PyMuPDF block into natural paragraphs.
+
+        PyMuPDF groups anything nearby into one block, so a heading and the
+        paragraph beneath it often arrive fused. Editing the heading should not
+        mean editing the body text too, so we split where the type size jumps or
+        the leading opens up.
+        """
+        lines = [ln for ln in block.get("lines", []) if ln.get("spans")]
+        if len(lines) <= 1:
+            return [block] if lines else []
+
+        groups: list[list[dict]] = [[lines[0]]]
+        for prev, cur in zip(lines, lines[1:]):
+            prev_size, cur_size = cls._line_size(prev), cls._line_size(cur)
+            try:
+                gap = cur["spans"][0]["origin"][1] - prev["spans"][0]["origin"][1]
+            except Exception:
+                gap = 0.0
+            size_jump = abs(cur_size - prev_size) / max(prev_size, cur_size, 1.0)
+            big_gap = gap > max(prev_size, cur_size) * 1.75
+            if size_jump > 0.18 or big_gap:
+                groups.append([cur])
             else:
-                # Still doesn't fit: allow the box to grow downward.
-                tall = fitz.Rect(rect.x0, rect.y0, rect.x1 + 2,
-                                 rect.y1 + 6 * fontsize)
-                page.insert_textbox(tall, new_text, fontsize=6.0,
-                                    fontname="helv", color=color)
+                groups[-1].append(cur)
+
+        if len(groups) == 1:
+            return [block]
+        result = []
+        for group in groups:
+            rect = fitz.Rect(group[0]["bbox"])
+            for line in group[1:]:
+                rect |= fitz.Rect(line["bbox"])
+            result.append({"type": 0, "bbox": tuple(rect), "lines": group})
+        return result
+
+    def raw_blocks(self, index: int) -> list[dict]:
+        """Text blocks with per-character geometry, split into paragraphs."""
+        try:
+            data = self.doc[index].get_text("rawdict")
+        except Exception:
+            return []
+        blocks = []
+        for block in data.get("blocks", []):
+            if block.get("type") == 0 and block.get("lines"):
+                blocks.extend(self._split_block(block))
+        return blocks
+
+    def editable_at(self, index: int, point: fitz.Point,
+                    slack: float = 2.0) -> EditableText | None:
+        """The text block under `point`, ready to put a caret in."""
+        page_rect = self.doc[index].rect
+        best = None
+        for block in self.raw_blocks(index):
+            rect = fitz.Rect(block["bbox"]) + (-slack, -slack, slack, slack)
+            if rect.contains(point) and (best is None or abs(rect) < abs(best[0])):
+                best = (rect, block)
+        if best is None:
+            return None
+        editable = EditableText.from_block(best[1], self.fonts, index, page_rect)
+        editable.page_index = index
+        return editable
+
+    def editable_blocks(self, index: int) -> list[tuple[fitz.Rect, dict]]:
+        return [(fitz.Rect(b["bbox"]), b) for b in self.raw_blocks(index)]
+
+    def erase_text_in(self, page: fitz.Page, rect: fitz.Rect):
+        """Remove glyphs inside rect, leaving images and vector art untouched."""
+        page.add_redact_annot(rect)
+        for kwargs in (
+            {"images": fitz.PDF_REDACT_IMAGE_NONE,
+             "graphics": getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)},
+            {"images": fitz.PDF_REDACT_IMAGE_NONE},
+            {},
+        ):
+            try:
+                page.apply_redactions(**kwargs)
+                return
+            except (TypeError, AttributeError):
+                continue
+        page.apply_redactions()
+
+    def commit_text(self, index: int, editable: EditableText,
+                    erase_rect: fitz.Rect | None = None, snapshot: bool = True):
+        """Write an edited block back into the page.
+
+        The original glyphs are erased and the block is redrawn from our layout,
+        reusing the embedded font wherever the text came from one.
+        """
+        if snapshot:
+            self._snapshot()
+        page = self.doc[index]
+        if erase_rect is not None:
+            self.erase_text_in(page, fitz.Rect(erase_rect) + (-1.0, -1.0, 1.0, 1.0))
+        for run in editable.draw_runs():
+            style = run.style
+            font = style.font
+            fontname = font.install(page, self.fonts) if font else "helv"
+            try:
+                page.insert_text(fitz.Point(run.x, run.baseline), run.text,
+                                 fontsize=style.size, fontname=fontname,
+                                 color=style.color, render_mode=0)
+            except Exception:
+                page.insert_text(fitz.Point(run.x, run.baseline), run.text,
+                                 fontsize=style.size, fontname="helv",
+                                 color=style.color)
         self._done(False)
+
+    def delete_text_block(self, index: int, rect: fitz.Rect):
+        self._snapshot()
+        self.erase_text_in(self.doc[index], fitz.Rect(rect) + (-1.0, -1.0, 1.0, 1.0))
+        self._done(False)
+
+    # --------------------------------------------------- annotation geometry
+
+    @staticmethod
+    def _apply_annot_rect(annot, target: fitz.Rect):
+        """Place an annotation at exactly `target`.
+
+        set_rect() grows the stored rect by the border width, so a naive
+        move would fatten the shape a little on every drag. Measure what we
+        actually got and correct once — the error is a constant offset, so a
+        single compensating pass lands it precisely.
+        """
+        target = fitz.Rect(target)
+        annot.set_rect(target)
+        got = fitz.Rect(annot.rect)
+        deltas = (got.x0 - target.x0, got.y0 - target.y0,
+                  got.x1 - target.x1, got.y1 - target.y1)
+        if max(abs(d) for d in deltas) > 0.01:
+            annot.set_rect(fitz.Rect(target.x0 - deltas[0], target.y0 - deltas[1],
+                                     target.x1 - deltas[2], target.y1 - deltas[3]))
+        annot.update()
+
+    def move_annot(self, index: int, xref: int, dx: float, dy: float):
+        page = self.doc[index]
+        for annot in page.annots():
+            if annot.xref == xref:
+                target = fitz.Rect(annot.rect) + (dx, dy, dx, dy)
+                self._snapshot()
+                try:
+                    self._apply_annot_rect(annot, target)
+                except Exception:
+                    return
+                self._done(False)
+                return
+
+    def resize_annot(self, index: int, xref: int, rect: fitz.Rect):
+        page = self.doc[index]
+        for annot in page.annots():
+            if annot.xref == xref:
+                self._snapshot()
+                try:
+                    self._apply_annot_rect(annot, rect)
+                except Exception:
+                    return
+                self._done(False)
+                return
 
     # ------------------------------------------------------------ doc tools
 
@@ -489,11 +594,71 @@ class PdfDocument:
         self.doc.set_metadata(meta)
         self._done(False)
 
-    def search_page(self, index: int, needle: str) -> list[fitz.Rect]:
+    def search_page(self, index: int, needle: str, case_sensitive: bool = False,
+                    whole_words: bool = False) -> list[fitz.Rect]:
+        if not needle:
+            return []
         try:
-            return self.doc[index].search_for(needle) or []
+            page = self.doc[index]
+            hits = page.search_for(needle) or []
         except Exception:
             return []
+        if not (case_sensitive or whole_words):
+            return hits
+
+        result = []
+        words = None
+        for rect in hits:
+            if case_sensitive:
+                try:
+                    if needle not in page.get_textbox(rect):
+                        continue
+                except Exception:
+                    pass
+            if whole_words:
+                if words is None:
+                    try:
+                        words = page.get_text("words")
+                    except Exception:
+                        words = []
+                probe = fitz.Rect(rect)
+                matched = False
+                for word in words:
+                    wr = fitz.Rect(word[:4])
+                    if wr.intersects(probe):
+                        token = word[4]
+                        if (token == needle if case_sensitive
+                                else token.lower() == needle.lower()):
+                            matched = True
+                            break
+                if not matched:
+                    continue
+            result.append(rect)
+        return result
+
+    def get_toc(self) -> list:
+        try:
+            return self.doc.get_toc() or []
+        except Exception:
+            return []
+
+    def add_text_markup(self, index: int, kind: str, rects: list[fitz.Rect],
+                        color=HIGHLIGHT_YELLOW):
+        """Highlight / underline / strike out a run of text."""
+        if not rects:
+            return
+        self._snapshot()
+        page = self.doc[index]
+        adder = {"highlight": page.add_highlight_annot,
+                 "underline": page.add_underline_annot,
+                 "strikeout": page.add_strikeout_annot}.get(kind)
+        if adder is None:
+            return
+        annot = adder(rects)
+        if annot:
+            annot.set_colors(stroke=color)
+            annot.update()
+        self._done(False)
 
     def page_text(self, index: int) -> str:
         return self.doc[index].get_text()

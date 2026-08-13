@@ -1,4 +1,4 @@
-"""Main application window: menus, toolbars, and the glue between UI and document."""
+"""Main window: menus, toolbars, docks, and the glue between UI and document."""
 
 from __future__ import annotations
 
@@ -6,25 +6,47 @@ import os
 
 import fitz
 from PySide6.QtCore import QSettings, QSize, Qt, QTimer
-from PySide6.QtGui import (QAction, QActionGroup, QColor, QImage, QKeySequence,
-                           QPixmap)
-from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog,
-                               QDoubleSpinBox, QFileDialog, QInputDialog,
-                               QLabel, QMainWindow, QMessageBox, QScrollArea,
-                               QSpinBox, QToolBar, QVBoxLayout, QWidget)
+from PySide6.QtGui import QAction, QActionGroup, QColor, QImage, QKeySequence
+from PySide6.QtWidgets import (QApplication, QColorDialog, QComboBox, QDialog,
+                               QDockWidget, QFileDialog, QInputDialog, QLabel,
+                               QLineEdit, QMainWindow, QMessageBox, QScrollArea,
+                               QSpinBox, QTabWidget, QToolBar, QWidget)
 
-from . import APP_NAME, __version__
+from . import APP_NAME, __version__, icons, theme
+from .canvas import HINTS, PageCanvas, Tool
 from .dialogs import (NewDocumentDialog, PageNumbersDialog, PasswordDialog,
                       PropertiesDialog, TextEntryDialog, WatermarkDialog)
-from .document import PdfDocument, PdfError, WHITE, BLACK
-from .find_bar import FindBar
-from .icons import app_icon, color_swatch, tool_icon
-from .page_view import TOOL_HINTS, PageView, Tool
-from .thumbnails import ThumbnailPanel
+from .document import BLACK, WHITE, PdfDocument, PdfError
+from .panels import InspectorPanel, OutlinePanel, SearchPanel, ThumbnailPanel
 
 PDF_FILTER = "PDF files (*.pdf)"
-IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tiff)"
-ZOOM_LEVELS = (0.25, 0.33, 0.5, 0.67, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0)
+IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp)"
+ZOOM_PRESETS = [("Fit width", "width"), ("Fit page", "page"), ("50%", 0.5),
+                ("75%", 0.75), ("100%", 1.0), ("125%", 1.25), ("150%", 1.5),
+                ("200%", 2.0), ("400%", 4.0)]
+
+TOOLBAR_TOOLS = [
+    (Tool.SELECT, "Select", "select"),
+    (Tool.EDIT_TEXT, "Edit text", "edittext"),
+    (Tool.TEXT, "Add text", "text"),
+    (Tool.TEXT_SELECT, "Select text", "textselect"),
+    None,
+    (Tool.HIGHLIGHT, "Highlight", "highlight"),
+    (Tool.UNDERLINE, "Underline", "underline"),
+    (Tool.STRIKEOUT, "Strike out", "strikeout"),
+    None,
+    (Tool.RECT, "Rectangle", "rect"),
+    (Tool.ELLIPSE, "Ellipse", "ellipse"),
+    (Tool.LINE, "Line", "line"),
+    (Tool.ARROW, "Arrow", "arrow"),
+    (Tool.INK, "Draw", "ink"),
+    None,
+    (Tool.IMAGE, "Image", "image"),
+    (Tool.NOTE, "Sticky note", "note"),
+    None,
+    (Tool.WHITEOUT, "Whiteout", "whiteout"),
+    (Tool.REDACT, "Redact", "redact"),
+]
 
 
 class MainWindow(QMainWindow):
@@ -32,134 +54,118 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.doc = PdfDocument()
         self.doc.on_changed = self._on_doc_changed
-
-        self.current_page = 0
-        self.zoom = 1.0
-        self.fit_mode = "width"           # "width" | "page" | None
-        self.current_color = QColor(200, 40, 40)
-        self.selected_annot: tuple[int, int] | None = None   # (page, xref)
-        self._pan_origin = (0, 0)
-        self._search_query = ""
-        self._search_hit = -1             # index into current page's hits
         self.settings = QSettings()
+        self.fill_shapes = False
 
         self.setWindowTitle(APP_NAME)
-        self.setWindowIcon(app_icon())
-        self.resize(1280, 860)
+        self.setWindowIcon(icons.app_icon())
+        self.resize(1440, 920)
         self.setAcceptDrops(True)
+        self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowTabbedDocks)
 
-        self._build_central()
+        self._build_canvas()
         self._build_actions()
         self._build_menus()
         self._build_toolbars()
+        self._build_docks()
         self._build_statusbar()
-
-        self.thumbs = ThumbnailPanel(self)
-        from PySide6.QtWidgets import QDockWidget
-        dock = QDockWidget("Pages", self)
-        dock.setObjectName("pagesDock")
-        dock.setWidget(self.thumbs)
-        dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
-        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-        self.pages_dock = dock
 
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
-        self._resize_timer.setInterval(120)
-        self._resize_timer.timeout.connect(self._fit_rerender)
-
+        self._resize_timer.setInterval(110)
+        self._resize_timer.timeout.connect(self._refit)
         self._sync_ui()
 
-    # ----------------------------------------------------------------- UI build
+    # -------------------------------------------------------------- building
 
-    def _build_central(self):
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        self.find_bar = FindBar()
-        self.find_bar.find_requested.connect(self._find)
-        self.find_bar.closed.connect(self._clear_search)
-        layout.addWidget(self.find_bar)
-
-        self.view = PageView(self)
+    def _build_canvas(self):
+        self.canvas = PageCanvas(self)
         self.scroll = QScrollArea()
-        self.scroll.setWidget(self.view)
-        self.scroll.setAlignment(Qt.AlignCenter)
-        self.scroll.setStyleSheet("QScrollArea { background: #52565c; border: none; }")
-        layout.addWidget(self.scroll, 1)
-        self.setCentralWidget(container)
+        self.scroll.setWidget(self.canvas)
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
+        self.scroll.setStyleSheet(f"QScrollArea {{ background: {theme.CANVAS}; border: none; }}")
+        self.scroll.verticalScrollBar().valueChanged.connect(
+            lambda _: self.canvas.update_current_page())
+        self.setCentralWidget(self.scroll)
 
-    def _act(self, text, slot, shortcut=None, icon=None, checkable=False):
+        self.canvas.page_changed.connect(self._page_changed)
+        self.canvas.selection_changed.connect(self._refresh_inspector)
+        self.canvas.edit_state_changed.connect(self._refresh_inspector)
+        self.canvas.status_message.connect(lambda m: self.statusBar().showMessage(m, 6000))
+
+    def _act(self, text, slot, shortcut=None, icon=None, checkable=False, tip=None):
         action = QAction(text, self)
         if icon:
-            action.setIcon(tool_icon(icon))
+            action.setIcon(icons.icon(icon))
         if shortcut:
             action.setShortcut(QKeySequence(shortcut))
         action.setCheckable(checkable)
+        action.setToolTip(tip or text.replace("&", "") +
+                          (f"  ({QKeySequence(shortcut).toString()})" if shortcut else ""))
         action.triggered.connect(slot)
         return action
 
     def _build_actions(self):
-        self.act_new = self._act("&New…", self.action_new, "Ctrl+N", "new")
-        self.act_open = self._act("&Open…", self.action_open, "Ctrl+O", "open")
-        self.act_save = self._act("&Save", self.action_save, "Ctrl+S", "save")
-        self.act_save_as = self._act("Save &As…", self.action_save_as, "Ctrl+Shift+S")
-        self.act_save_pw = self._act("Save with Pass&word…", self.action_save_encrypted)
-        self.act_save_opt = self._act("Save Optimi&zed As…", self.action_save_optimized)
-        self.act_merge = self._act("&Insert / Merge PDF…", self.action_insert_pdf, "Ctrl+M")
-        self.act_extract = self._act("&Extract Pages…", self.action_extract_pages)
-        self.act_export_png = self._act("Export Page as &PNG…", self.action_export_png)
-        self.act_props = self._act("P&roperties…", self.action_properties)
-        self.act_print = self._act("&Print…", self.action_print, "Ctrl+P", "print")
-        self.act_quit = self._act("E&xit", self.close, "Ctrl+Q")
+        A = self._act
+        self.act_new = A("&New…", self.action_new, "Ctrl+N", "new")
+        self.act_open = A("&Open…", self.action_open, "Ctrl+O", "open")
+        self.act_save = A("&Save", self.action_save, "Ctrl+S", "save")
+        self.act_save_as = A("Save &As…", self.action_save_as, "Ctrl+Shift+S")
+        self.act_save_pw = A("Save with Pass&word…", self.action_save_encrypted, None, "lock")
+        self.act_save_opt = A("Save Optimi&sed As…", self.action_save_optimized)
+        self.act_merge = A("&Insert / Merge PDF…", self.action_insert_pdf, "Ctrl+M", "merge")
+        self.act_extract = A("&Extract Pages…", self.action_extract_pages, None, "extract")
+        self.act_export_png = A("Export Page as &Image…", self.action_export_png)
+        self.act_export_text = A("Export &Text…", self.action_export_text)
+        self.act_props = A("Document P&roperties…", self.action_properties, None, "props")
+        self.act_print = A("&Print…", self.action_print, "Ctrl+P", "print")
+        self.act_quit = A("E&xit", self.close, "Ctrl+Q")
 
-        self.act_undo = self._act("&Undo", self.action_undo, "Ctrl+Z", "undo")
-        self.act_redo = self._act("&Redo", self.action_redo, "Ctrl+Shift+Z", "redo")
-        self.act_del_annot = self._act("&Delete Selected Annotation",
-                                       self.delete_selected_annot, "Del")
-        self.act_copy_text = self._act("&Copy Page Text", self.action_copy_text)
-        self.act_find = self._act("&Find…", self.find_bar_show, "Ctrl+F", "find")
+        self.act_undo = A("&Undo", self.action_undo, "Ctrl+Z", "undo")
+        self.act_redo = A("&Redo", self.action_redo, "Ctrl+Shift+Z", "redo")
+        self.act_copy = A("&Copy", self.action_copy, "Ctrl+C", "copy")
+        self.act_delete_obj = A("&Delete Selection", self.action_delete_selection, "Del", "delete")
+        self.act_select_all = A("Select &All Text on Page", self.action_select_all_text, "Ctrl+A")
+        self.act_find = A("&Find…", self.action_find, "Ctrl+F", "find")
+        self.act_find_next = A("Find &Next", lambda: self.search_panel.step(1), "F3")
+        self.act_find_prev = A("Find &Previous", lambda: self.search_panel.step(-1), "Shift+F3")
 
-        self.act_rot_left = self._act("Rotate &Left", lambda: self.rotate_pages(-90))
-        self.act_rot_right = self._act("Rotate &Right", lambda: self.rotate_pages(90))
-        self.act_move_up = self._act("Move Page &Up", lambda: self.move_page_by(-1))
-        self.act_move_down = self._act("Move Page &Down", lambda: self.move_page_by(1))
-        self.act_insert_blank = self._act("&Insert Blank Page", self.action_insert_blank)
-        self.act_delete_pages = self._act("De&lete Page(s)", self.action_delete_pages)
-        self.act_page_numbers = self._act("Add Page &Numbers…", self.action_page_numbers)
-        self.act_watermark = self._act("Add &Watermark…", self.action_watermark)
+        self.act_rot_left = A("Rotate &Left", lambda: self.rotate_pages(-90), "Ctrl+[", "rotate-left")
+        self.act_rot_right = A("Rotate &Right", lambda: self.rotate_pages(90), "Ctrl+]", "rotate-right")
+        self.act_move_up = A("Move Page &Up", lambda: self.move_page_by(-1))
+        self.act_move_down = A("Move Page &Down", lambda: self.move_page_by(1))
+        self.act_insert_blank = A("&Insert Blank Page", self.action_insert_blank)
+        self.act_delete_pages = A("De&lete Page(s)", self.action_delete_pages)
+        self.act_page_numbers = A("Add Page &Numbers…", self.action_page_numbers, None, "numbering")
+        self.act_watermark = A("Add &Watermark…", self.action_watermark, None, "watermark")
 
-        self.act_zoom_in = self._act("Zoom &In", lambda: self.zoom_steps(1), "Ctrl++", "zoom-in")
-        self.act_zoom_out = self._act("Zoom &Out", lambda: self.zoom_steps(-1), "Ctrl+-", "zoom-out")
-        self.act_fit_width = self._act("Fit &Width", self.fit_width, "Ctrl+1", "fit-width")
-        self.act_fit_page = self._act("Fit &Page", self.fit_page, "Ctrl+2", "fit-page")
-        self.act_actual = self._act("&Actual Size", self.actual_size, "Ctrl+0")
-        self.act_prev = self._act("&Previous Page", lambda: self.goto_page(self.current_page - 1), "PgUp")
-        self.act_next = self._act("&Next Page", lambda: self.goto_page(self.current_page + 1), "PgDown")
-        self.act_first = self._act("&First Page", lambda: self.goto_page(0), "Ctrl+Home")
-        self.act_last = self._act("&Last Page", lambda: self.goto_page(self.doc.page_count - 1), "Ctrl+End")
+        self.act_zoom_in = A("Zoom &In", lambda: self.zoom_step(1), "Ctrl++", "zoom-in")
+        self.act_zoom_out = A("Zoom &Out", lambda: self.zoom_step(-1), "Ctrl+-", "zoom-out")
+        self.act_fit_width = A("Fit &Width", lambda: self.set_zoom_mode("width"), "Ctrl+1", "fit-width")
+        self.act_fit_page = A("Fit &Page", lambda: self.set_zoom_mode("page"), "Ctrl+2", "fit-page")
+        self.act_actual = A("&Actual Size", lambda: self.set_zoom_mode(1.0), "Ctrl+0")
+        self.act_prev = A("&Previous Page", lambda: self.goto_page(self.canvas.current_page - 1), "PgUp")
+        self.act_next = A("&Next Page", lambda: self.goto_page(self.canvas.current_page + 1), "PgDown")
+        self.act_first = A("&First Page", lambda: self.goto_page(0), "Ctrl+Home")
+        self.act_last = A("&Last Page", lambda: self.goto_page(self.doc.page_count - 1), "Ctrl+End")
+        self.act_toggle_side = A("Toggle &Sidebar", self.toggle_sidebar, "F9", "sidebar")
+        self.act_toggle_inspect = A("Toggle &Inspector", self.toggle_inspector, "F10")
 
-        self.act_about = self._act("&About", self.action_about)
-        self.act_shortcuts = self._act("&Keyboard Shortcuts", self.action_shortcuts)
+        self.act_about = A("&About", self.action_about)
+        self.act_shortcuts = A("&Keyboard Shortcuts", self.action_shortcuts, "F1")
 
-        # tools
         self.tool_group = QActionGroup(self)
         self.tool_group.setExclusive(True)
-        self.tool_actions = {}
-        for tool, label in [
-            (Tool.SELECT, "Select / Pan"), (Tool.TEXT, "Add Text"),
-            (Tool.EDIT_TEXT, "Edit Text"), (Tool.HIGHLIGHT, "Highlight"),
-            (Tool.RECT, "Rectangle"), (Tool.ELLIPSE, "Ellipse"),
-            (Tool.LINE, "Line"), (Tool.ARROW, "Arrow"), (Tool.INK, "Draw"),
-            (Tool.WHITEOUT, "Whiteout"), (Tool.REDACT, "Redact"),
-            (Tool.IMAGE, "Insert Image"), (Tool.NOTE, "Sticky Note"),
-        ]:
-            action = QAction(tool_icon(tool), label, self)
+        self.tool_actions: dict[str, QAction] = {}
+        for entry in TOOLBAR_TOOLS:
+            if entry is None:
+                continue
+            tool, label, icon_name = entry
+            action = QAction(icons.icon(icon_name), label, self)
             action.setCheckable(True)
-            action.setData(tool)
-            action.setToolTip(f"{label} — {TOOL_HINTS.get(tool, '')}")
+            action.setToolTip(f"{label} — {HINTS.get(tool, '')}")
             action.triggered.connect(lambda _=False, t=tool: self.set_tool(t))
             self.tool_group.addAction(action)
             self.tool_actions[tool] = action
@@ -167,274 +173,410 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self):
         bar = self.menuBar()
-        m_file = bar.addMenu("&File")
-        for action in (self.act_new, self.act_open):
-            m_file.addAction(action)
-        self.recent_menu = m_file.addMenu("Open &Recent")
-        self._rebuild_recent_menu()
-        m_file.addSeparator()
-        for action in (self.act_save, self.act_save_as, self.act_save_pw, self.act_save_opt):
-            m_file.addAction(action)
-        m_file.addSeparator()
-        for action in (self.act_merge, self.act_extract, self.act_export_png):
-            m_file.addAction(action)
-        m_file.addSeparator()
-        for action in (self.act_props, self.act_print):
-            m_file.addAction(action)
-        m_file.addSeparator()
-        m_file.addAction(self.act_quit)
+        m = bar.addMenu("&File")
+        m.addAction(self.act_new)
+        m.addAction(self.act_open)
+        self.recent_menu = m.addMenu("Open &Recent")
+        self._rebuild_recent()
+        m.addSeparator()
+        for a in (self.act_save, self.act_save_as, self.act_save_pw, self.act_save_opt):
+            m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_merge, self.act_extract, self.act_export_png, self.act_export_text):
+            m.addAction(a)
+        m.addSeparator()
+        m.addAction(self.act_props)
+        m.addAction(self.act_print)
+        m.addSeparator()
+        m.addAction(self.act_quit)
 
-        m_edit = bar.addMenu("&Edit")
-        for action in (self.act_undo, self.act_redo):
-            m_edit.addAction(action)
-        m_edit.addSeparator()
-        m_edit.addAction(self.act_del_annot)
-        m_edit.addSeparator()
-        for action in (self.act_copy_text, self.act_find):
-            m_edit.addAction(action)
+        m = bar.addMenu("&Edit")
+        for a in (self.act_undo, self.act_redo):
+            m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_copy, self.act_delete_obj, self.act_select_all):
+            m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_find, self.act_find_next, self.act_find_prev):
+            m.addAction(a)
 
-        m_pages = bar.addMenu("&Pages")
-        for action in (self.act_rot_left, self.act_rot_right):
-            m_pages.addAction(action)
-        m_pages.addSeparator()
-        for action in (self.act_move_up, self.act_move_down):
-            m_pages.addAction(action)
-        m_pages.addSeparator()
-        for action in (self.act_insert_blank, self.act_delete_pages):
-            m_pages.addAction(action)
-        m_pages.addSeparator()
-        for action in (self.act_page_numbers, self.act_watermark):
-            m_pages.addAction(action)
+        m = bar.addMenu("&Tools")
+        for entry in TOOLBAR_TOOLS:
+            if entry is None:
+                m.addSeparator()
+            else:
+                m.addAction(self.tool_actions[entry[0]])
 
-        m_view = bar.addMenu("&View")
-        for action in (self.act_zoom_in, self.act_zoom_out, self.act_fit_width,
-                       self.act_fit_page, self.act_actual):
-            m_view.addAction(action)
-        m_view.addSeparator()
-        for action in (self.act_prev, self.act_next, self.act_first, self.act_last):
-            m_view.addAction(action)
+        m = bar.addMenu("&Pages")
+        for a in (self.act_rot_left, self.act_rot_right):
+            m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_move_up, self.act_move_down):
+            m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_insert_blank, self.act_delete_pages, self.act_extract):
+            m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_page_numbers, self.act_watermark):
+            m.addAction(a)
 
-        m_help = bar.addMenu("&Help")
-        m_help.addAction(self.act_shortcuts)
-        m_help.addAction(self.act_about)
+        m = bar.addMenu("&View")
+        for a in (self.act_zoom_in, self.act_zoom_out, self.act_fit_width,
+                  self.act_fit_page, self.act_actual):
+            m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_prev, self.act_next, self.act_first, self.act_last):
+            m.addAction(a)
+        m.addSeparator()
+        m.addAction(self.act_toggle_side)
+        m.addAction(self.act_toggle_inspect)
+
+        m = bar.addMenu("&Help")
+        m.addAction(self.act_shortcuts)
+        m.addAction(self.act_about)
 
     def _build_toolbars(self):
-        main_tb = QToolBar("Main")
-        main_tb.setObjectName("mainToolbar")
-        main_tb.setMovable(False)
-        main_tb.setIconSize(QSize(22, 22))
-        self.addToolBar(main_tb)
-        for action in (self.act_open, self.act_save, self.act_print):
-            main_tb.addAction(action)
-        main_tb.addSeparator()
-        for action in (self.act_undo, self.act_redo):
-            main_tb.addAction(action)
-        main_tb.addSeparator()
+        tb = QToolBar("Main")
+        tb.setObjectName("mainbar")
+        tb.setMovable(False)
+        tb.setIconSize(QSize(22, 22))
+        self.addToolBar(tb)
+        for a in (self.act_toggle_side, None, self.act_open, self.act_save,
+                  self.act_print, None, self.act_undo, self.act_redo, None):
+            tb.addSeparator() if a is None else tb.addAction(a)
 
         self.page_spin = QSpinBox()
         self.page_spin.setRange(1, 1)
-        self.page_spin.setToolTip("Current page")
-        self.page_spin.valueChanged.connect(self._page_spin_changed)
-        self._page_spin_guard = False
-        main_tb.addWidget(self.page_spin)
-        self.page_total = QLabel(" / 0  ")
-        main_tb.addWidget(self.page_total)
-        main_tb.addSeparator()
+        self.page_spin.setFixedWidth(58)
+        self.page_spin.setAlignment(Qt.AlignCenter)
+        self.page_spin.setToolTip("Go to page")
+        self._spin_guard = False
+        self.page_spin.valueChanged.connect(self._spin_changed)
+        tb.addWidget(self.page_spin)
+        self.page_total = QLabel(" / 0 ")
+        tb.addWidget(self.page_total)
 
-        for action in (self.act_zoom_out, self.act_zoom_in, self.act_fit_width, self.act_fit_page):
-            main_tb.addAction(action)
-        self.zoom_label = QLabel(" 100% ")
-        main_tb.addWidget(self.zoom_label)
-        main_tb.addSeparator()
-        main_tb.addAction(self.act_find)
+        tb.addSeparator()
+        tb.addAction(self.act_zoom_out)
+        self.zoom_combo = QComboBox()
+        self.zoom_combo.setEditable(True)
+        self.zoom_combo.setFixedWidth(104)
+        for label, value in ZOOM_PRESETS:
+            self.zoom_combo.addItem(label, value)
+        self.zoom_combo.setCurrentIndex(0)
+        self.zoom_combo.activated.connect(self._zoom_combo_picked)
+        self.zoom_combo.lineEdit().returnPressed.connect(self._zoom_typed)
+        tb.addWidget(self.zoom_combo)
+        tb.addAction(self.act_zoom_in)
+        tb.addAction(self.act_fit_width)
+        tb.addAction(self.act_fit_page)
+        tb.addSeparator()
+        tb.addAction(self.act_rot_left)
+        tb.addAction(self.act_rot_right)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding,
+                             spacer.sizePolicy().verticalPolicy().Preferred)
+        tb.addWidget(spacer)
+        tb.addAction(self.act_find)
 
         self.addToolBarBreak()
-        tools_tb = QToolBar("Tools")
-        tools_tb.setObjectName("toolsToolbar")
-        tools_tb.setMovable(False)
-        tools_tb.setIconSize(QSize(22, 22))
-        self.addToolBar(tools_tb)
-        for tool, action in self.tool_actions.items():
-            tools_tb.addAction(action)
-            if tool in (Tool.SELECT, Tool.EDIT_TEXT, Tool.INK, Tool.REDACT):
-                tools_tb.addSeparator()
-
-        self.color_action = QAction(color_swatch(self.current_color), "Color", self)
-        self.color_action.setToolTip("Stroke / text color")
+        tools = QToolBar("Tools")
+        tools.setObjectName("toolsbar")
+        tools.setMovable(False)
+        tools.setIconSize(QSize(22, 22))
+        self.addToolBar(tools)
+        for entry in TOOLBAR_TOOLS:
+            if entry is None:
+                tools.addSeparator()
+            else:
+                tools.addAction(self.tool_actions[entry[0]])
+        tools.addSeparator()
+        self.color_action = QAction(icons.color_swatch(self.canvas.color), "Colour", self)
+        self.color_action.setToolTip("Colour for new text, shapes and drawings")
         self.color_action.triggered.connect(self.pick_color)
-        tools_tb.addAction(self.color_action)
+        tools.addAction(self.color_action)
 
-        self.width_spin = QDoubleSpinBox()
-        self.width_spin.setRange(0.5, 12.0)
-        self.width_spin.setSingleStep(0.5)
-        self.width_spin.setValue(2.0)
-        self.width_spin.setPrefix("W ")
-        self.width_spin.setToolTip("Stroke width")
-        tools_tb.addWidget(self.width_spin)
+    def _build_docks(self):
+        self.side_tabs = QTabWidget()
+        self.side_tabs.setDocumentMode(True)
+        self.thumbs = ThumbnailPanel(self)
+        self.outline = OutlinePanel(self)
+        self.search_panel = SearchPanel(self)
+        self.side_tabs.addTab(self.thumbs, icons.icon("pages"), "")
+        self.side_tabs.addTab(self.outline, icons.icon("outline"), "")
+        self.side_tabs.addTab(self.search_panel, icons.icon("find"), "")
+        self.side_tabs.setTabToolTip(0, "Page thumbnails")
+        self.side_tabs.setTabToolTip(1, "Bookmarks")
+        self.side_tabs.setTabToolTip(2, "Search")
 
-        self.font_spin = QSpinBox()
-        self.font_spin.setRange(6, 96)
-        self.font_spin.setValue(14)
-        self.font_spin.setPrefix("A ")
-        self.font_spin.setToolTip("Font size for the Text tool")
-        tools_tb.addWidget(self.font_spin)
+        self.side_dock = QDockWidget("Pages", self)
+        self.side_dock.setObjectName("sideDock")
+        self.side_dock.setWidget(self.side_tabs)
+        self.side_dock.setFeatures(QDockWidget.DockWidgetMovable |
+                                   QDockWidget.DockWidgetClosable)
+        self.side_dock.setMinimumWidth(210)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.side_dock)
+        self.side_tabs.currentChanged.connect(
+            lambda i: self.side_dock.setWindowTitle(
+                ["Pages", "Bookmarks", "Search"][i] if i < 3 else "Pages"))
+
+        self.inspector = InspectorPanel(self)
+        self.inspector.changed.connect(self._inspector_changed)
+        self.inspect_dock = QDockWidget("Properties", self)
+        self.inspect_dock.setObjectName("inspectDock")
+        self.inspect_dock.setWidget(self.inspector)
+        self.inspect_dock.setFeatures(QDockWidget.DockWidgetMovable |
+                                      QDockWidget.DockWidgetClosable)
+        self.inspect_dock.setMinimumWidth(226)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.inspect_dock)
 
     def _build_statusbar(self):
-        self.status_hint = QLabel("")
+        self.status_hint = QLabel(HINTS[Tool.SELECT])
         self.statusBar().addWidget(self.status_hint, 1)
-        self.status_info = QLabel("")
-        self.statusBar().addPermanentWidget(self.status_info)
+        self.status_page = QLabel("")
+        self.status_size = QLabel("")
+        for widget in (self.status_page, self.status_size):
+            self.statusBar().addPermanentWidget(widget)
 
-    # -------------------------------------------------------------- rendering
+    # ------------------------------------------------------------- document
 
     def _on_doc_changed(self, structural: bool):
+        page = self.canvas.current_page
         if self.doc.is_open():
-            self.current_page = max(0, min(self.current_page, self.doc.page_count - 1))
-        self.selected_annot = None
-        self.render_page()
+            page = max(0, min(page, self.doc.page_count - 1))
+        self.canvas.invalidate_cache(None if structural else page)
+        self.canvas.relayout()
         if structural:
             self.thumbs.populate()
-            self.thumbs.sync_current(self.current_page)
+            self.outline.populate()
+            self.thumbs.sync_current(page)
         else:
-            self.thumbs.refresh_page(self.current_page)
+            self.thumbs.refresh_page(page)
         self._sync_ui()
-
-    def render_page(self):
-        if not self.doc.is_open():
-            self.view.set_content(None)
-            return
-        if self.fit_mode:
-            self._compute_fit_zoom()
-        index = self.current_page
-        dpr = self.devicePixelRatioF() or 1.0
-        try:
-            pix = self.doc.render(index, min(self.zoom * dpr, 8.0))
-        except Exception as exc:
-            self.statusBar().showMessage(f"Render failed: {exc}", 4000)
-            return
-        image = QImage(pix.samples, pix.width, pix.height, pix.stride,
-                       QImage.Format_RGB888).copy()
-        qpix = QPixmap.fromImage(image)
-        qpix.setDevicePixelRatio(dpr)
-        fwd = self.doc.display_matrix(index, self.zoom)
-        inv = self.doc.inverse_matrix(index, self.zoom)
-        self.view.set_content(qpix, fwd, inv)
-        self._apply_search_overlay()
-        self.zoom_label.setText(f" {int(self.zoom * 100)}% ")
-
-    def _compute_fit_zoom(self):
-        if not self.doc.is_open():
-            return
-        page = self.doc.page(self.current_page)
-        avail_w = max(100, self.scroll.viewport().width() - 24)
-        avail_h = max(100, self.scroll.viewport().height() - 24)
-        zw = avail_w / max(1.0, page.rect.width)
-        zh = avail_h / max(1.0, page.rect.height)
-        self.zoom = min(zw, zh) if self.fit_mode == "page" else zw
-        self.zoom = max(0.1, min(self.zoom, 8.0))
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.fit_mode and self.doc.is_open():
-            self._resize_timer.start()
-
-    def _fit_rerender(self):
-        if self.fit_mode:
-            self.render_page()
 
     def _sync_ui(self):
         open_ = self.doc.is_open()
         for action in (self.act_save, self.act_save_as, self.act_save_pw,
                        self.act_save_opt, self.act_merge, self.act_extract,
-                       self.act_export_png, self.act_props, self.act_print,
-                       self.act_copy_text, self.act_find, self.act_rot_left,
-                       self.act_rot_right, self.act_move_up, self.act_move_down,
-                       self.act_insert_blank, self.act_delete_pages,
-                       self.act_page_numbers, self.act_watermark,
-                       self.act_zoom_in, self.act_zoom_out, self.act_fit_width,
-                       self.act_fit_page, self.act_actual, self.act_prev,
-                       self.act_next, self.act_first, self.act_last):
+                       self.act_export_png, self.act_export_text, self.act_props,
+                       self.act_print, self.act_copy, self.act_select_all,
+                       self.act_find, self.act_rot_left, self.act_rot_right,
+                       self.act_move_up, self.act_move_down, self.act_insert_blank,
+                       self.act_delete_pages, self.act_page_numbers,
+                       self.act_watermark, self.act_zoom_in, self.act_zoom_out,
+                       self.act_fit_width, self.act_fit_page, self.act_actual,
+                       self.act_prev, self.act_next, self.act_first, self.act_last):
             action.setEnabled(open_)
         for action in self.tool_actions.values():
             action.setEnabled(open_)
         self.act_undo.setEnabled(open_ and self.doc.can_undo)
         self.act_redo.setEnabled(open_ and self.doc.can_redo)
-        self.act_del_annot.setEnabled(self.selected_annot is not None)
-
-        count = self.doc.page_count
-        self._page_spin_guard = True
-        self.page_spin.setRange(1, max(1, count))
-        self.page_spin.setValue(self.current_page + 1)
-        self._page_spin_guard = False
-        self.page_total.setText(f" / {count}  ")
+        self.act_delete_obj.setEnabled(self.canvas.sel_annot is not None)
         self.page_spin.setEnabled(open_)
 
-        name = os.path.basename(self.doc.path) if self.doc.path else (
-            "Untitled" if open_ else "")
+        count = self.doc.page_count
+        self._spin_guard = True
+        self.page_spin.setRange(1, max(1, count))
+        self.page_spin.setValue(self.canvas.current_page + 1)
+        self._spin_guard = False
+        self.page_total.setText(f" / {count} ")
+        self.status_page.setText(f"Page {self.canvas.current_page + 1} of {count}" if open_ else "")
+        if open_:
+            rect = self.doc.page(self.canvas.current_page).rect
+            self.status_size.setText(f"{rect.width:.0f} × {rect.height:.0f} pt")
+        else:
+            self.status_size.setText("")
+
+        name = os.path.basename(self.doc.path) if self.doc.path else ("Untitled" if open_ else "")
         self.setWindowTitle(f"{name}[*] — {APP_NAME}" if name else APP_NAME)
         self.setWindowModified(self.doc.dirty)
-        if open_:
-            page = self.doc.page(self.current_page)
-            self.status_info.setText(
-                f"{page.rect.width:.0f} × {page.rect.height:.0f} pt   ")
+        self._refresh_inspector()
 
-    # ------------------------------------------------------------- navigation
+    def _refresh_inspector(self):
+        self.inspector.refresh()
+        self.act_delete_obj.setEnabled(self.canvas.sel_annot is not None)
+        self.act_undo.setEnabled(self.doc.is_open() and self.doc.can_undo)
+        self.act_redo.setEnabled(self.doc.is_open() and self.doc.can_redo)
+
+    def _page_changed(self, index: int):
+        self.thumbs.sync_current(index)
+        self._spin_guard = True
+        self.page_spin.setValue(index + 1)
+        self._spin_guard = False
+        self.status_page.setText(f"Page {index + 1} of {self.doc.page_count}")
+
+    # ----------------------------------------------------------- navigation
 
     def goto_page(self, index: int):
         if not self.doc.is_open():
             return
         index = max(0, min(index, self.doc.page_count - 1))
-        if index == self.current_page:
-            return
-        self.current_page = index
-        self.selected_annot = None
-        self._search_hit = -1
-        self.render_page()
-        self.thumbs.sync_current(index)
+        self.canvas.scroll_to_page(index)
         self._sync_ui()
 
-    def _page_spin_changed(self, value: int):
-        if not self._page_spin_guard:
+    def _spin_changed(self, value: int):
+        if not self._spin_guard:
             self.goto_page(value - 1)
 
-    # ------------------------------------------------------------------- zoom
+    # ----------------------------------------------------------------- zoom
 
-    def set_zoom(self, zoom: float, fit_mode=None):
-        self.fit_mode = fit_mode
-        self.zoom = max(0.1, min(zoom, 8.0))
-        self.render_page()
-
-    def zoom_steps(self, steps: float):
-        if not self.doc.is_open():
-            return
-        levels = list(ZOOM_LEVELS)
-        current = self.zoom
-        if steps > 0:
-            nxt = next((z for z in levels if z > current * 1.01), levels[-1])
+    def set_zoom_mode(self, mode):
+        if isinstance(mode, str):
+            self.canvas.set_zoom(self.canvas.zoom, fit_mode=mode)
         else:
-            nxt = next((z for z in reversed(levels) if z < current * 0.99), levels[0])
-        self.set_zoom(nxt, fit_mode=None)
+            self.canvas.set_zoom(float(mode), fit_mode=None)
+        self._update_zoom_label()
 
-    def fit_width(self):
-        self.set_zoom(self.zoom, fit_mode="width")
+    def zoom_step(self, direction: int):
+        levels = [0.25, 0.33, 0.5, 0.67, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0]
+        current = self.canvas.zoom
+        if direction > 0:
+            target = next((z for z in levels if z > current * 1.02), levels[-1])
+        else:
+            target = next((z for z in reversed(levels) if z < current * 0.98), levels[0])
+        self.canvas.set_zoom(target, fit_mode=None)
+        self._update_zoom_label()
 
-    def fit_page(self):
-        self.set_zoom(self.zoom, fit_mode="page")
+    def _zoom_combo_picked(self, index: int):
+        value = self.zoom_combo.itemData(index)
+        self.set_zoom_mode(value)
 
-    def actual_size(self):
-        self.set_zoom(1.0, fit_mode=None)
+    def _zoom_typed(self):
+        text = self.zoom_combo.currentText().strip().rstrip("%")
+        try:
+            self.set_zoom_mode(max(8.0, min(float(text), 800.0)) / 100.0)
+        except ValueError:
+            self._update_zoom_label()
 
-    # ---------------------------------------------------------------- panning
+    def _update_zoom_label(self):
+        mode = self.canvas.fit_mode
+        label = ("Fit width" if mode == "width" else "Fit page" if mode == "page"
+                 else f"{int(round(self.canvas.zoom * 100))}%")
+        self.zoom_combo.setCurrentText(label)
 
-    def begin_pan(self):
-        self._pan_origin = (self.scroll.horizontalScrollBar().value(),
-                            self.scroll.verticalScrollBar().value())
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.doc.is_open() and self.canvas.fit_mode:
+            self._resize_timer.start()
 
-    def pan_move(self, dx: int, dy: int):
-        self.scroll.horizontalScrollBar().setValue(self._pan_origin[0] - dx)
-        self.scroll.verticalScrollBar().setValue(self._pan_origin[1] - dy)
+    def _refit(self):
+        if self.canvas.fit_mode:
+            self.canvas.set_zoom(self.canvas.zoom, fit_mode=self.canvas.fit_mode)
 
-    # ------------------------------------------------------------- file actions
+    def toggle_sidebar(self):
+        self.side_dock.setVisible(not self.side_dock.isVisible())
+
+    def toggle_inspector(self):
+        self.inspect_dock.setVisible(not self.inspect_dock.isVisible())
+
+    # ---------------------------------------------------------------- tools
+
+    def set_tool(self, tool: str):
+        action = self.tool_actions.get(tool)
+        if action:
+            action.setChecked(True)
+        self.canvas.set_tool(tool)
+        self.status_hint.setText(HINTS.get(tool, ""))
+        self._refresh_inspector()
+
+    def pick_color(self):
+        color = QColorDialog.getColor(self.canvas.color, self, "Choose colour")
+        if color.isValid():
+            self.canvas.color = color
+            self.color_action.setIcon(icons.color_swatch(color))
+            if self.canvas.edit is not None:
+                self.canvas.apply_edit_style(
+                    color=(color.redF(), color.greenF(), color.blueF()))
+
+    def _rgb(self):
+        c = self.canvas.color
+        return (c.redF(), c.greenF(), c.blueF())
+
+    def _inspector_changed(self, key: str, value):
+        canvas = self.canvas
+        if key == "size":
+            canvas.font_size = value
+            if canvas.edit is not None:
+                canvas.apply_edit_style(size=float(value))
+        elif key in ("bold", "italic"):
+            if canvas.edit is not None:
+                canvas.apply_edit_style(**{key: bool(value)})
+        elif key == "family":
+            if canvas.edit is not None:
+                canvas.apply_edit_style(family=value)
+        elif key == "width":
+            canvas.stroke_width = float(value)
+        elif key == "fill":
+            self.fill_shapes = bool(value)
+        elif key in ("pick_color", "pick_text_color"):
+            self.pick_color()
+        elif key == "delete_annot":
+            self.action_delete_selection()
+
+    # --------------------------------------------------------- tool commits
+
+    def commit_marquee(self, tool: str, index: int, rect: fitz.Rect):
+        try:
+            if tool == Tool.RECT:
+                self.doc.add_shape(index, "rect", rect, color=self._rgb(),
+                                   width=self.canvas.stroke_width,
+                                   fill=self._rgb() if self.fill_shapes else None)
+            elif tool == Tool.ELLIPSE:
+                self.doc.add_shape(index, "ellipse", rect, color=self._rgb(),
+                                   width=self.canvas.stroke_width,
+                                   fill=self._rgb() if self.fill_shapes else None)
+            elif tool == Tool.WHITEOUT:
+                self.doc.redact_area(index, rect, fill=WHITE)
+            elif tool == Tool.REDACT:
+                self.doc.redact_area(index, rect, fill=BLACK)
+            elif tool == Tool.IMAGE:
+                self._place_image(index, rect)
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, f"Could not apply that: {exc}")
+
+    def commit_markup(self, tool: str, index: int, rects):
+        kind = {Tool.HIGHLIGHT: "highlight", Tool.UNDERLINE: "underline",
+                Tool.STRIKEOUT: "strikeout"}[tool]
+        color = ((1.0, 0.85, 0.0) if kind == "highlight" else self._rgb())
+        try:
+            self.doc.add_text_markup(index, kind, rects, color=color)
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, f"Could not mark up the text: {exc}")
+
+    def commit_line(self, tool: str, index: int, p1, p2):
+        try:
+            self.doc.add_line(index, p1, p2, color=self._rgb(),
+                              width=self.canvas.stroke_width,
+                              arrow=(tool == Tool.ARROW))
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, f"Could not draw that: {exc}")
+
+    def commit_ink(self, index: int, points):
+        try:
+            self.doc.add_ink(index, points, color=self._rgb(),
+                             width=self.canvas.stroke_width)
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, f"Could not draw that: {exc}")
+
+    def commit_click(self, tool: str, index: int, point):
+        if tool == Tool.NOTE:
+            dialog = TextEntryDialog(self, "Sticky note", label="Note text:")
+            if dialog.exec() == QDialog.Accepted and dialog.text().strip():
+                self.doc.add_note(index, point, dialog.text())
+
+    def _place_image(self, index: int, rect: fitz.Rect):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose image", self._last_dir(),
+                                              IMAGE_FILTER)
+        if not path:
+            return
+        if rect.width < 12 or rect.height < 12:
+            w, h = self.doc.image_size(path)
+            scale = 240.0 / max(w, 1)
+            rect = fitz.Rect(rect.x0, rect.y0, rect.x0 + w * scale, rect.y0 + h * scale)
+        self.doc.add_image(index, rect, path)
+
+    # ---------------------------------------------------------- file actions
 
     def action_new(self):
         if not self._confirm_discard():
@@ -443,9 +585,9 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         size, pages = dialog.values()
-        self.current_page = 0
         self.doc.new(pages=pages, size=size)
         self.set_tool(Tool.SELECT)
+        self.set_zoom_mode("width")
 
     def action_open(self):
         if not self._confirm_discard():
@@ -464,31 +606,34 @@ class MainWindow(QMainWindow):
                 return
             if result == "ok":
                 break
-            from PySide6.QtWidgets import QLineEdit
-            title = "Password required" if result == "needs_password" else "Wrong password — try again"
+            title = ("Password required" if result == "needs_password"
+                     else "Wrong password — try again")
             password, ok = QInputDialog.getText(
-                self, title, f"Password for {os.path.basename(path)}:",
-                QLineEdit.Password)
+                self, title, f"Password for {os.path.basename(path)}:", QLineEdit.Password)
             if not ok:
                 return
-        self.current_page = 0
         self._remember_recent(path)
+        self.search_panel.clear()
         self.set_tool(Tool.SELECT)
-        self.fit_width()
+        self.canvas.scroll_to_page(0)
+        self.set_zoom_mode("width")
+        self.statusBar().showMessage(f"Opened {os.path.basename(path)}", 4000)
 
     def action_save(self):
         if not self.doc.is_open():
             return
+        self.canvas.commit_edit()
         if not self.doc.path:
             self.action_save_as()
             return
         try:
             self.doc.save()
-            self.statusBar().showMessage("Saved", 2500)
+            self.statusBar().showMessage("Saved", 3000)
+            self._sync_ui()
         except Exception as exc:
             QMessageBox.critical(self, APP_NAME, f"Save failed: {exc}")
 
-    def _save_as_path(self, title="Save PDF As"):
+    def _ask_save_path(self, title="Save PDF As"):
         suggestion = self.doc.path or os.path.join(self._last_dir(), "document.pdf")
         path, _ = QFileDialog.getSaveFileName(self, title, suggestion, PDF_FILTER)
         if path and not path.lower().endswith(".pdf"):
@@ -496,36 +641,45 @@ class MainWindow(QMainWindow):
         return path
 
     def action_save_as(self):
-        path = self._save_as_path()
+        self.canvas.commit_edit()
+        path = self._ask_save_path()
         if not path:
             return
         try:
             self.doc.save(path)
             self._remember_recent(path)
-            self.statusBar().showMessage("Saved", 2500)
+            self.statusBar().showMessage("Saved", 3000)
+            self._sync_ui()
         except Exception as exc:
             QMessageBox.critical(self, APP_NAME, f"Save failed: {exc}")
 
     def action_save_encrypted(self):
+        self.canvas.commit_edit()
         dialog = PasswordDialog(self)
         if dialog.exec() != QDialog.Accepted:
             return
-        path = self._save_as_path("Save Encrypted PDF As")
+        path = self._ask_save_path("Save Encrypted PDF As")
         if not path:
             return
         try:
             self.doc.save(path, user_pw=dialog.password())
-            self.statusBar().showMessage("Saved with password", 3000)
+            self.statusBar().showMessage("Saved with password protection", 4000)
         except Exception as exc:
             QMessageBox.critical(self, APP_NAME, f"Save failed: {exc}")
 
     def action_save_optimized(self):
-        path = self._save_as_path("Save Optimized PDF As")
+        self.canvas.commit_edit()
+        path = self._ask_save_path("Save Optimised PDF As")
         if not path:
             return
         try:
+            before = os.path.getsize(self.doc.path) if self.doc.path and os.path.exists(self.doc.path) else 0
             self.doc.save(path, optimize=True)
-            self.statusBar().showMessage("Saved (optimized)", 3000)
+            after = os.path.getsize(path)
+            msg = "Saved (optimised)"
+            if before:
+                msg += f" — {before // 1024} KB → {after // 1024} KB"
+            self.statusBar().showMessage(msg, 5000)
         except Exception as exc:
             QMessageBox.critical(self, APP_NAME, f"Save failed: {exc}")
 
@@ -536,25 +690,25 @@ class MainWindow(QMainWindow):
             return
         box = QMessageBox(self)
         box.setWindowTitle("Insert PDF")
-        box.setText(f"Where should the pages of\n{os.path.basename(path)}\nbe inserted?")
-        after_btn = box.addButton("After current page", QMessageBox.AcceptRole)
-        end_btn = box.addButton("At the end", QMessageBox.AcceptRole)
+        box.setText(f"Where should the pages of\n{os.path.basename(path)}\ngo?")
+        after = box.addButton("After current page", QMessageBox.AcceptRole)
+        end = box.addButton("At the end", QMessageBox.AcceptRole)
         box.addButton(QMessageBox.Cancel)
         box.exec()
         clicked = box.clickedButton()
         try:
-            if clicked is after_btn:
-                count = self.doc.insert_pdf_file(path, at=self.current_page + 1)
-            elif clicked is end_btn:
+            if clicked is after:
+                count = self.doc.insert_pdf_file(path, at=self.canvas.current_page + 1)
+            elif clicked is end:
                 count = self.doc.insert_pdf_file(path)
             else:
                 return
-            self.statusBar().showMessage(f"Inserted {count} page(s)", 3000)
-        except (PdfError, Exception) as exc:
+            self.statusBar().showMessage(f"Inserted {count} page(s)", 4000)
+        except Exception as exc:
             QMessageBox.critical(self, APP_NAME, f"Insert failed: {exc}")
 
     def action_extract_pages(self):
-        pages = self.thumbs.selected_pages() or [self.current_page]
+        pages = self.thumbs.selected_pages() or [self.canvas.current_page]
         path, _ = QFileDialog.getSaveFileName(
             self, f"Extract {len(pages)} page(s) to…",
             os.path.join(self._last_dir(), "extracted.pdf"), PDF_FILTER)
@@ -564,83 +718,96 @@ class MainWindow(QMainWindow):
             path += ".pdf"
         try:
             self.doc.extract_pages(pages, path)
-            self.statusBar().showMessage(f"Extracted {len(pages)} page(s)", 3000)
+            self.statusBar().showMessage(f"Extracted {len(pages)} page(s)", 4000)
         except Exception as exc:
             QMessageBox.critical(self, APP_NAME, f"Extract failed: {exc}")
 
     def action_export_png(self):
+        page = self.canvas.current_page
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export page as PNG",
-            os.path.join(self._last_dir(), f"page-{self.current_page + 1}.png"),
-            "PNG image (*.png)")
+            self, "Export page as image",
+            os.path.join(self._last_dir(), f"page-{page + 1}.png"),
+            "PNG image (*.png);;JPEG image (*.jpg)")
         if not path:
             return
-        if not path.lower().endswith(".png"):
-            path += ".png"
         try:
-            self.doc.export_page_image(self.current_page, path)
+            self.doc.export_page_image(page, path, zoom=2.5)
             self.statusBar().showMessage("Page exported", 3000)
         except Exception as exc:
             QMessageBox.critical(self, APP_NAME, f"Export failed: {exc}")
 
+    def action_export_text(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export document text",
+            os.path.join(self._last_dir(), "document.txt"), "Text file (*.txt)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                for i in range(self.doc.page_count):
+                    fh.write(f"--- Page {i + 1} ---\n{self.doc.page_text(i)}\n")
+            self.statusBar().showMessage("Text exported", 3000)
+        except Exception as exc:
+            QMessageBox.critical(self, APP_NAME, f"Export failed: {exc}")
+
     def action_properties(self):
-        meta = self.doc.get_metadata()
-        page = self.doc.page(self.current_page)
+        page = self.doc.page(self.canvas.current_page)
         info = (f"{self.doc.page_count} page(s) · current page "
-                f"{page.rect.width:.0f}×{page.rect.height:.0f} pt")
-        dialog = PropertiesDialog(self, meta, info)
+                f"{page.rect.width:.0f} × {page.rect.height:.0f} pt")
+        dialog = PropertiesDialog(self, self.doc.get_metadata(), info)
         if dialog.exec() == QDialog.Accepted:
             self.doc.set_metadata(dialog.values())
-            self.statusBar().showMessage("Properties updated", 2500)
-
-    def action_copy_text(self):
-        text = self.doc.page_text(self.current_page)
-        QApplication.clipboard().setText(text)
-        self.statusBar().showMessage(f"Copied text of page {self.current_page + 1}", 2500)
+            self.statusBar().showMessage("Properties updated", 3000)
 
     def action_print(self):
         try:
             from PySide6.QtPrintSupport import QPrintDialog, QPrinter
         except ImportError:
-            QMessageBox.warning(self, APP_NAME, "Printing is not available in this build.")
+            QMessageBox.warning(self, APP_NAME, "Printing is unavailable in this build.")
             return
         from PySide6.QtGui import QPainter
+        self.canvas.commit_edit()
         printer = QPrinter(QPrinter.HighResolution)
-        dialog = QPrintDialog(printer, self)
-        if dialog.exec() != QDialog.Accepted:
+        if QPrintDialog(printer, self).exec() != QDialog.Accepted:
             return
         painter = QPainter(printer)
         try:
             for i in range(self.doc.page_count):
-                if i > 0:
+                if i:
                     printer.newPage()
-                pix = self.doc.render(i, 2.0)
-                image = QImage(pix.samples, pix.width, pix.height, pix.stride,
+                raw = self.doc.render(i, 2.0)
+                image = QImage(raw.samples, raw.width, raw.height, raw.stride,
                                QImage.Format_RGB888).copy()
                 target = painter.viewport()
-                scaled = image.size()
-                scaled.scale(target.size(), Qt.KeepAspectRatio)
-                painter.drawImage(
-                    target.x(), target.y(),
-                    image.scaled(scaled, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                size = image.size()
+                size.scale(target.size(), Qt.KeepAspectRatio)
+                painter.drawImage(target.x(), target.y(),
+                                  image.scaled(size, Qt.KeepAspectRatio,
+                                               Qt.SmoothTransformation))
         finally:
             painter.end()
-        self.statusBar().showMessage("Sent to printer", 3000)
+        self.statusBar().showMessage("Sent to printer", 4000)
 
-    # ------------------------------------------------------------ page actions
+    # ---------------------------------------------------------- page actions
 
-    def _target_pages(self) -> list[int]:
-        pages = self.thumbs.selected_pages()
-        return pages if pages else [self.current_page]
+    def _target_pages(self):
+        return self.thumbs.selected_pages() or [self.canvas.current_page]
 
     def rotate_pages(self, delta: int):
         if self.doc.is_open():
+            self.canvas.commit_edit()
             self.doc.rotate_pages(self._target_pages(), delta)
 
     def action_delete_pages(self):
         if not self.doc.is_open():
             return
         pages = self._target_pages()
+        if len(pages) > 1:
+            answer = QMessageBox.question(
+                self, APP_NAME, f"Delete {len(pages)} pages?",
+                QMessageBox.Yes | QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
         try:
             self.doc.delete_pages(pages)
         except PdfError as exc:
@@ -648,18 +815,19 @@ class MainWindow(QMainWindow):
 
     def move_page(self, src: int, dest: int):
         if self.doc.is_open():
-            self.current_page = max(0, min(dest, self.doc.page_count - 1))
             self.doc.move_page(src, dest)
+            self.goto_page(dest)
 
     def move_page_by(self, delta: int):
-        src = self.current_page
+        src = self.canvas.current_page
         dest = src + delta
         if 0 <= dest < self.doc.page_count:
             self.move_page(src, dest)
 
     def action_insert_blank(self):
         if self.doc.is_open():
-            self.doc.insert_blank_page(self.current_page + 1, like=self.current_page)
+            self.doc.insert_blank_page(self.canvas.current_page + 1,
+                                       like=self.canvas.current_page)
 
     def action_page_numbers(self):
         dialog = PageNumbersDialog(self)
@@ -668,7 +836,7 @@ class MainWindow(QMainWindow):
             try:
                 self.doc.add_page_numbers(fmt=fmt, position=pos, start=start)
             except (KeyError, IndexError, ValueError) as exc:
-                QMessageBox.warning(self, APP_NAME, f"Bad format string: {exc}")
+                QMessageBox.warning(self, APP_NAME, f"That format string is not valid: {exc}")
 
     def action_watermark(self):
         dialog = WatermarkDialog(self)
@@ -683,185 +851,48 @@ class MainWindow(QMainWindow):
                 self.act_insert_blank, self.act_delete_pages, None,
                 self.act_extract]
 
-    # ------------------------------------------------------------ tool commits
+    # ---------------------------------------------------------- edit actions
 
-    def set_tool(self, tool: str):
-        self.tool_actions[tool].setChecked(True)
-        self.view.set_tool(tool)
-        self.status_hint.setText(TOOL_HINTS.get(tool, ""))
+    def action_undo(self):
+        self.canvas.cancel_edit()
+        self.doc.undo()
 
-    def pick_color(self):
-        color = QColorDialog.getColor(self.current_color, self, "Choose color")
-        if color.isValid():
-            self.current_color = color
-            self.view.color = color
-            self.color_action.setIcon(color_swatch(color))
+    def action_redo(self):
+        self.canvas.cancel_edit()
+        self.doc.redo()
 
-    def _rgb(self):
-        c = self.current_color
-        return (c.redF(), c.greenF(), c.blueF())
+    def action_copy(self):
+        text = self.canvas.selected_document_text()
+        if not text and self.canvas.edit is not None:
+            text = self.canvas.edit.selected_text()
+        if not text:
+            text = self.doc.page_text(self.canvas.current_page)
+            self.statusBar().showMessage("Copied the whole page's text", 3000)
+        QApplication.clipboard().setText(text)
 
-    def commit_rubber(self, tool: str, rect: fitz.Rect):
-        index = self.current_page
+    def action_select_all_text(self):
+        if self.canvas.edit is not None:
+            self.canvas.edit.select_all()
+            self.canvas.update()
+            return
+        page = self.canvas.current_page
         try:
-            if tool == Tool.HIGHLIGHT:
-                self.doc.add_highlight(index, rect)
-            elif tool == Tool.RECT:
-                self.doc.add_shape(index, "rect", rect, color=self._rgb(),
-                                   width=self.width_spin.value())
-            elif tool == Tool.ELLIPSE:
-                self.doc.add_shape(index, "ellipse", rect, color=self._rgb(),
-                                   width=self.width_spin.value())
-            elif tool == Tool.WHITEOUT:
-                self.doc.redact_area(index, rect, fill=WHITE)
-            elif tool == Tool.REDACT:
-                self.doc.redact_area(index, rect, fill=BLACK)
-            elif tool == Tool.IMAGE:
-                self._place_image(index, rect)
-            elif tool == Tool.TEXT:
-                self._place_text(index, rect)
-        except Exception as exc:
-            QMessageBox.warning(self, APP_NAME, f"Could not apply {tool}: {exc}")
-
-    def _place_text(self, index: int, rect: fitz.Rect):
-        dialog = TextEntryDialog(self, "Add text")
-        if dialog.exec() != QDialog.Accepted or not dialog.text().strip():
+            words = self.doc.page(page).get_text("words")
+        except Exception:
             return
-        fontsize = float(self.font_spin.value())
-        if rect.width < 8 or rect.height < 8:
-            lines = dialog.text().count("\n") + 1
-            rect = fitz.Rect(rect.x0, rect.y0, rect.x0 + 260,
-                             rect.y0 + (lines + 0.6) * fontsize * 1.25)
-        self.doc.add_textbox(index, rect, dialog.text(), fontsize=fontsize,
-                             color=self._rgb())
+        self.canvas.text_sel = [(page, fitz.Rect(w[:4])) for w in words]
+        self.canvas.update()
 
-    def _place_image(self, index: int, rect: fitz.Rect):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose image",
-                                              self._last_dir(), IMAGE_FILTER)
-        if not path:
-            return
-        if rect.width < 8 or rect.height < 8:
-            width, height = self.doc.image_size(path)
-            scale = 260.0 / max(width, 1)
-            rect = fitz.Rect(rect.x0, rect.y0, rect.x0 + width * scale,
-                             rect.y0 + height * scale)
-        self.doc.add_image(index, rect, path)
+    def action_delete_selection(self):
+        if self.canvas.sel_annot is not None:
+            index, xref = self.canvas.sel_annot
+            self.canvas.clear_annot_selection()
+            self.doc.delete_annot(index, xref)
 
-    def commit_line(self, tool: str, p1: fitz.Point, p2: fitz.Point):
-        try:
-            self.doc.add_line(self.current_page, p1, p2, color=self._rgb(),
-                              width=self.width_spin.value(),
-                              arrow=(tool == Tool.ARROW))
-        except Exception as exc:
-            QMessageBox.warning(self, APP_NAME, f"Could not draw line: {exc}")
-
-    def commit_ink(self, points):
-        if len(points) > 1:
-            try:
-                self.doc.add_ink(self.current_page, points, color=self._rgb(),
-                                 width=self.width_spin.value())
-            except Exception as exc:
-                QMessageBox.warning(self, APP_NAME, f"Could not draw: {exc}")
-
-    def commit_click(self, tool: str, point: fitz.Point):
-        index = self.current_page
-        if tool == Tool.NOTE:
-            dialog = TextEntryDialog(self, "Sticky note")
-            if dialog.exec() == QDialog.Accepted and dialog.text().strip():
-                self.doc.add_note(index, point, dialog.text())
-        elif tool == Tool.EDIT_TEXT:
-            block = self.doc.block_at(index, point)
-            if block is None:
-                self.statusBar().showMessage("No editable text there", 3000)
-                return
-            dialog = TextEntryDialog(
-                self, "Edit text", self.doc.block_text(block),
-                label="Edits are re-set in Helvetica at the detected size — "
-                      "complex layouts may shift slightly.")
-            if dialog.exec() == QDialog.Accepted:
-                self.doc.replace_block_text(index, block, dialog.text())
-
-    # --------------------------------------------------------- annot selection
-
-    def select_annot_at(self, point: fitz.Point) -> bool:
-        hit = self.doc.annot_at(self.current_page, point)
-        if hit is None:
-            return False
-        xref, rect = hit
-        self.selected_annot = (self.current_page, xref)
-        self.view.set_selection(self.view.from_page_rect(rect))
-        self.act_del_annot.setEnabled(True)
-        self.statusBar().showMessage("Annotation selected — press Del to delete", 4000)
-        return True
-
-    def clear_selection(self):
-        self.selected_annot = None
-        self.view.set_selection(None)
-        self.act_del_annot.setEnabled(False)
-
-    def delete_selected_annot(self):
-        if self.selected_annot is None:
-            return
-        index, xref = self.selected_annot
-        self.selected_annot = None
-        self.doc.delete_annot(index, xref)
-
-    # -------------------------------------------------------------------- find
-
-    def find_bar_show(self):
-        if self.doc.is_open():
-            self.find_bar.show_bar()
-
-    def _find(self, query: str, backward: bool):
-        if not self.doc.is_open():
-            return
-        if query != self._search_query:
-            self._search_query = query
-            self._search_hit = -1
-        count = self.doc.page_count
-        page = self.current_page
-        hits = self.doc.search_page(page, query)
-        step = -1 if backward else 1
-        nxt = self._search_hit + step
-        if hits and 0 <= nxt < len(hits):
-            self._search_hit = nxt
-        else:
-            found = False
-            for offset in range(1, count + 1):
-                candidate = (page + step * offset) % count
-                candidate_hits = self.doc.search_page(candidate, query)
-                if candidate_hits:
-                    self.goto_page(candidate)
-                    hits = candidate_hits
-                    self._search_hit = len(hits) - 1 if backward else 0
-                    found = True
-                    break
-            if not found:
-                if hits:  # only hits are on this page — wrap within it
-                    self._search_hit = len(hits) - 1 if backward else 0
-                else:
-                    self.find_bar.set_status("No matches")
-                    self.view.set_search_rects([])
-                    return
-        self._apply_search_overlay(scroll_to_hit=True)
-
-    def _apply_search_overlay(self, scroll_to_hit: bool = False):
-        if not self._search_query or not self.doc.is_open():
-            return
-        hits = self.doc.search_page(self.current_page, self._search_query)
-        rects = [self.view.from_page_rect(r) for r in hits]
-        self.view.set_search_rects(rects)
-        if hits:
-            hit_index = max(0, min(self._search_hit, len(hits) - 1))
-            self.find_bar.set_status(f"{hit_index + 1} of {len(hits)} on page")
-            if scroll_to_hit and rects:
-                rect = rects[hit_index]
-                self.scroll.ensureVisible(rect.center().x(), rect.center().y(), 120, 120)
-
-    def _clear_search(self):
-        self._search_query = ""
-        self._search_hit = -1
-        self.view.set_search_rects([])
+    def action_find(self):
+        self.side_dock.setVisible(True)
+        self.side_tabs.setCurrentWidget(self.search_panel)
+        self.search_panel.focus_entry()
 
     # ----------------------------------------------------------- recent files
 
@@ -877,10 +908,10 @@ class MainWindow(QMainWindow):
             recent = [recent]
         recent = [p for p in recent if p != path]
         recent.insert(0, path)
-        self.settings.setValue("recentFiles", recent[:10])
-        self._rebuild_recent_menu()
+        self.settings.setValue("recentFiles", recent[:12])
+        self._rebuild_recent()
 
-    def _rebuild_recent_menu(self):
+    def _rebuild_recent(self):
         self.recent_menu.clear()
         recent = self.settings.value("recentFiles", []) or []
         if isinstance(recent, str):
@@ -894,48 +925,47 @@ class MainWindow(QMainWindow):
 
     def _open_recent(self, path: str):
         if not os.path.exists(path):
-            QMessageBox.warning(self, APP_NAME, f"File not found:\n{path}")
+            QMessageBox.warning(self, APP_NAME, f"That file has moved or been deleted:\n{path}")
             return
         if self._confirm_discard():
             self.open_path(path)
 
-    # ------------------------------------------------------------------- misc
-
-    def action_undo(self):
-        self.doc.undo()
-
-    def action_redo(self):
-        self.doc.redo()
+    # ------------------------------------------------------------------ misc
 
     def action_about(self):
         QMessageBox.about(
             self, f"About {APP_NAME}",
-            f"<b>{APP_NAME}</b> v{__version__}<br><br>"
-            "A free PDF viewer and editor.<br>"
-            "Built with PySide6 (Qt) and PyMuPDF.<br><br>"
-            "PyMuPDF is licensed under the AGPL — this application and its "
-            "source code are free and open.")
+            f"<h3>{APP_NAME} {__version__}</h3>"
+            "<p>A free PDF editor — view, edit text in place, annotate, "
+            "reorganise pages, redact and protect.</p>"
+            "<p style='color:#888'>Built with Qt (PySide6) and MuPDF. "
+            "The text layout and editing engine is written from scratch for "
+            "this application.</p>")
 
     def action_shortcuts(self):
         QMessageBox.information(
             self, "Keyboard shortcuts",
-            "<table cellpadding=4>"
+            "<table cellpadding=5>"
             "<tr><td><b>Ctrl+O / Ctrl+S</b></td><td>Open / Save</td></tr>"
             "<tr><td><b>Ctrl+Z / Ctrl+Shift+Z</b></td><td>Undo / Redo</td></tr>"
-            "<tr><td><b>Ctrl+F</b></td><td>Find text</td></tr>"
+            "<tr><td><b>Ctrl+F / F3</b></td><td>Find / find next</td></tr>"
+            "<tr><td><b>Ctrl+B / Ctrl+I</b></td><td>Bold / italic while editing text</td></tr>"
+            "<tr><td><b>Esc</b></td><td>Finish editing a text block</td></tr>"
             "<tr><td><b>PgUp / PgDown</b></td><td>Previous / next page</td></tr>"
             "<tr><td><b>Ctrl++ / Ctrl+- / Ctrl+0</b></td><td>Zoom in / out / 100%</td></tr>"
             "<tr><td><b>Ctrl+1 / Ctrl+2</b></td><td>Fit width / fit page</td></tr>"
-            "<tr><td><b>Ctrl+scroll</b></td><td>Zoom</td></tr>"
-            "<tr><td><b>Del</b></td><td>Delete selected annotation</td></tr>"
-            "<tr><td><b>Ctrl+M</b></td><td>Insert / merge PDF</td></tr>"
+            "<tr><td><b>Ctrl+scroll</b></td><td>Zoom around the pointer</td></tr>"
+            "<tr><td><b>Space+drag</b> or middle-drag</td><td>Pan</td></tr>"
+            "<tr><td><b>Del</b></td><td>Delete the selected object</td></tr>"
+            "<tr><td><b>F9 / F10</b></td><td>Toggle sidebar / properties</td></tr>"
             "</table>")
 
     def _confirm_discard(self) -> bool:
+        self.canvas.commit_edit()
         if not (self.doc.is_open() and self.doc.dirty):
             return True
         answer = QMessageBox.question(
-            self, APP_NAME, "The document has unsaved changes. Save them first?",
+            self, APP_NAME, "This document has unsaved changes. Save them first?",
             QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
         if answer == QMessageBox.Save:
             self.action_save()
@@ -943,16 +973,10 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.Discard
 
     def closeEvent(self, event):
-        if self._confirm_discard():
-            event.accept()
-        else:
-            event.ignore()
-
-    # ------------------------------------------------------------ drag & drop
+        event.accept() if self._confirm_discard() else event.ignore()
 
     def dragEnterEvent(self, event):
-        if any(url.toLocalFile().lower().endswith(".pdf")
-               for url in event.mimeData().urls()):
+        if any(u.toLocalFile().lower().endswith(".pdf") for u in event.mimeData().urls()):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
