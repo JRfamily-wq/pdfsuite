@@ -53,7 +53,8 @@ generic substitute.
 Every push builds all three platforms. On GitHub go to
 **Actions → "Build PDF Studio executables" → the latest run → Artifacts**, and
 download `PDFStudio-Windows` (or `-macOS` / `-Linux`). Unzip it and run
-`PDFStudio.exe` — no installation, no dependencies.
+`PDFStudio.exe` — no installation, no dependencies. Each build also publishes
+`SHA256SUMS.txt` so you can verify what you downloaded.
 
 Windows shows a SmartScreen warning for unsigned apps the first time:
 choose **More info → Run anyway**.
@@ -68,7 +69,7 @@ choose **More info → Run anyway**.
 ### Option C — run from source
 
 ```bash
-pip install -r requirements.txt
+pip install --require-hashes --only-binary :all: -r requirements.lock
 python main.py [file.pdf]
 ```
 
@@ -140,6 +141,23 @@ platform before the executable is built.
   undo works right up until you save.
 - Form filling and digital signatures are not implemented. You can place a
   signature *image* with the Image tool.
+
+## Security and corporate deployment
+
+The app makes **no network connections of any kind** — no telemetry, no update
+check, no licence check, no account. Qt's networking module is excluded from
+the build entirely. Everything it needs is sealed inside the single executable,
+so it runs on an air-gapped machine.
+
+Dependencies are pinned by exact version and SHA-256 in `requirements.lock`,
+and CI installs with `--require-hashes --only-binary :all:`. If a package's
+contents differ by a single byte — a hijacked maintainer account, a poisoned
+mirror — the build fails instead of shipping. A separate CI job runs
+`pip-audit` against the pinned versions on every push.
+
+See **[SECURITY.md](SECURITY.md)** for the full review notes, including the
+two things a reviewer should weigh: the executable is unsigned, and PyMuPDF is
+AGPL-licensed.
 
 ## Licence
 

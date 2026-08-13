@@ -1,2 +1,10 @@
+# Convenience file for a quick "run from source" install.
+#
+# BUILDS MUST NOT USE THIS FILE. Use requirements.lock instead:
+#     pip install --require-hashes --only-binary :all: -r requirements.lock
+#
+# The ranges below would accept any future release, including a malicious one
+# published from a compromised maintainer account. requirements.lock pins exact
+# versions and SHA-256 hashes so tampering fails the build. See SECURITY.md.
 PySide6-Essentials>=6.6,<7
 PyMuPDF>=1.24,<2
