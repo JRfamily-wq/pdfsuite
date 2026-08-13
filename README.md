@@ -9,7 +9,7 @@ type. Text reflows as you go, and when you're done the words are written back
 in the document's own font — including fonts embedded in the file, not a
 generic substitute.
 
-### ⬇️ [**Download the app**](https://github.com/jrreptiles000-wq/pdfsuite/releases/latest)
+### ⬇️ [**Download the app**](../../releases/latest)
 
 Grab the `.zip` for your platform from the latest release, unzip it, and run it.
 No installer, no Python, no account, no internet connection needed.
@@ -55,7 +55,7 @@ No installer, no Python, no account, no internet connection needed.
 
 ### Option A — download a prebuilt executable (easiest)
 
-Go to **[Releases](https://github.com/jrreptiles000-wq/pdfsuite/releases/latest)**
+Go to **[Releases](../../releases/latest)**
 and download the zip for your platform. No GitHub account needed.
 
 | Platform | File | Run |
