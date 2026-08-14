@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox,
                                QVBoxLayout, QWidget)
 
 from . import icons, theme
+from .doc_features import STAMP_PRESETS
 
 THUMB_W, THUMB_H = 116, 152
 
@@ -401,6 +402,25 @@ class InspectorPanel(QWidget):
         dg.addWidget(self.fill_shapes)
         layout.addWidget(self.draw_group)
 
+        # ---- stamp chooser, shown only while the stamp tool is active
+        self.stamp_group = QWidget()
+        sg = QVBoxLayout(self.stamp_group)
+        sg.setContentsMargins(0, 0, 0, 0)
+        sg.setSpacing(7)
+        sg.addWidget(_heading("Stamp"))
+        self.stamp = QComboBox()
+        for name in STAMP_PRESETS:
+            self.stamp.addItem(name.title(), name)
+        self.stamp.setEditable(True)
+        self.stamp.currentTextChanged.connect(
+            lambda t: self._emit("stamp", t.upper()))
+        sg.addWidget(self.stamp)
+        stamp_hint = QLabel("Pick a preset or type your own, then click the page.")
+        stamp_hint.setWordWrap(True)
+        stamp_hint.setProperty("dim", "true")
+        sg.addWidget(stamp_hint)
+        layout.addWidget(self.stamp_group)
+
         # ---- selected annotation
         self.annot_group = QWidget()
         ag = QVBoxLayout(self.annot_group)
@@ -430,7 +450,8 @@ class InspectorPanel(QWidget):
             selected = canvas.sel_annot is not None
             self.text_group.setVisible(editing or canvas.tool in ("text", "edittext"))
             self.annot_group.setVisible(selected)
-            self.draw_group.setVisible(not editing)
+            self.stamp_group.setVisible(canvas.tool == "stamp")
+            self.draw_group.setVisible(not editing and canvas.tool != "stamp")
 
             if editing:
                 style = canvas.edit.pending_style

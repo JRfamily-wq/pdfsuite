@@ -30,22 +30,48 @@ No installer, no Python, no account, no internet connection needed.
 - Add brand-new text boxes anywhere with the Text tool
 - Original typeface is preserved on save, embedded fonts included
 
+**Filling in forms**
+- Fillable PDFs are detected and every field is tinted so you can see them
+- Click a field and type; tick boxes toggle on click; dropdowns offer their choices
+- Tab moves to the next field in reading order
+- A Form panel lists every field with its value, and can jump to any of them
+- **Reset** clears the whole form; **Flatten** burns the answers in so the
+  form can no longer be edited or re-submitted
+
 **Annotation and markup**
 - Highlight, underline, strike out (drag across text — it snaps to words)
 - Rectangles, ellipses, lines, arrows, freehand ink, with colour and thickness
 - Sticky notes and image stamps (drop in a signature, logo or photo)
+- **Stamps** — APPROVED, DRAFT, CONFIDENTIAL and friends, or type your own
+- A **Comments panel** listing every annotation in the document: filter by
+  kind, click to jump to it, read and edit its note, delete it
 - Click any object to select it, drag to move, drag a corner handle to resize,
   Delete to remove
+- **Flatten annotations** to bake them permanently into the page
 - **Whiteout** erases an area to white; **Redact** permanently removes the
   content and fills it black
 - Undo/redo across every operation
 
+**Reading and navigation**
+- Three view modes: continuous scroll, one page at a time, or a two-page spread
+- **Night mode** inverts the page for reading in the dark
+- Thumbnail sidebar, whole-document search with match-case / whole-word
+- **Snapshot** tool copies any region of the page to the clipboard as an image
+- Clickable links are followed; make your own with the Link tool
+
+**Bookmarks**
+- Add, rename, delete and re-indent bookmarks — not just follow them
+- **Generate a contents list automatically** by finding the headings in a
+  document that has none
+
 **Pages and documents**
-- Continuous scrolling view of the whole document, with a thumbnail sidebar
 - Rotate, delete, reorder (drag thumbnails), insert blank pages
 - Merge another PDF in, or extract pages out to a new file
-- Bookmarks panel, whole-document search with match-case / whole-word options
-- Watermarks, page numbers, document properties
+- **Split** a document — every N pages, by custom ranges, or at each bookmark
+- **Crop** pages to a region you drag, and reset it again
+- **Insert images as pages**, so a folder of scans becomes a PDF
+- **Attach files** inside the PDF, and extract them again
+- Watermarks, printed page numbers, and reader page labels (i, ii, A-1…)
 - Create new PDFs (A4 / Letter / Legal)
 - Save with AES-256 password protection, or save an optimised (smaller) copy
 - Print, export a page as an image, export all text
@@ -107,6 +133,9 @@ python main.py [file.pdf]
 | Space+drag, or middle-drag | Pan |
 | Del | Delete the selected object |
 | Ctrl+M / Ctrl+P | Insert-merge a PDF / Print |
+| Ctrl+3 / Ctrl+4 / Ctrl+5 | Continuous / single page / two-page spread |
+| Ctrl+D | Night mode |
+| Tab | Next form field |
 | F9 / F10 | Toggle sidebar / properties panel |
 
 ## How it works
@@ -119,6 +148,7 @@ The parts that make a PDF editor an *editor* are written from scratch here:
 | `fonts.py` | Font resolution, exact glyph measurement, embedded-font extraction and re-embedding |
 | `canvas.py` | Continuous page canvas, all direct manipulation and live text rendering |
 | `document.py` | Document model, undo/redo, and the commit path back into the PDF |
+| `doc_features.py` | Forms, bookmarks, links, attachments, stamps, page surgery |
 | `panels.py` / `theme.py` / `icons.py` | Sidebar, inspector, dark theme, runtime-drawn icons |
 
 Editing text works by rebuilding the structure a PDF throws away. Characters
@@ -137,12 +167,14 @@ kind of app. No PDF-editing library is doing the work.
 ```bash
 python tests/test_document.py                        # document engine
 python tests/test_textengine.py                      # layout / caret / commit fidelity
+python tests/test_features.py                        # forms, bookmarks, links, split…
 QT_QPA_PLATFORM=offscreen python tests/test_gui.py   # GUI with synthesized input
 ```
 
 The GUI test drives the real window with synthesized mouse and keyboard events:
-clicking into text, typing, dragging a text block, drawing and resizing shapes,
-highlighting, searching and navigating. All three suites run in CI on every
+clicking into text, typing, dragging a text block, clicking a form field and
+filling it, ticking a checkbox, drawing and resizing shapes, switching view
+modes, taking a snapshot, and searching. All four suites run in CI on every
 platform before the executable is built.
 
 ## Limitations worth knowing
@@ -155,8 +187,10 @@ platform before the executable is built.
   beneath. That is inherent to editing text in a fixed-layout format.
 - Whiteout and redaction are permanent once saved — that is the point — but
   undo works right up until you save.
-- Form filling and digital signatures are not implemented. You can place a
-  signature *image* with the Image tool.
+- Digital signatures are not implemented — you can place a signature *image*
+  with the Image tool, but not a cryptographic signature.
+- Scanned PDFs are images, so their text is not searchable or editable. There
+  is no OCR built in.
 
 ## Security and corporate deployment
 

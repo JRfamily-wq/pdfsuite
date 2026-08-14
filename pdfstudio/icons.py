@@ -301,6 +301,52 @@ def icon(name: str) -> QIcon:
         p.setPen(_pen(ACCENT, 1.5))
         p.drawRect(QRectF(8, 7, 10, 12))
 
+    elif name == "stamp":
+        p.setPen(_pen(DANGER, 1.6))
+        p.save()
+        p.translate(11, 11)
+        p.rotate(-14)
+        p.drawRoundedRect(QRectF(-8.5, -5.5, 17, 11), 1.6, 1.6)
+        font = QFont("DejaVu Sans")
+        font.setPixelSize(7)
+        font.setBold(True)
+        p.setFont(font)
+        p.drawText(QRectF(-8.5, -5.5, 17, 11), Qt.AlignCenter, "OK")
+        p.restore()
+
+    elif name == "snapshot":
+        p.setPen(_pen(width=1.6))
+        for x0, y0, dx, dy in ((4, 4, 5, 0), (4, 4, 0, 5), (18, 4, -5, 0),
+                               (18, 4, 0, 5), (4, 18, 5, 0), (4, 18, 0, -5),
+                               (18, 18, -5, 0), (18, 18, 0, -5)):
+            p.drawLine(QPointF(x0, y0), QPointF(x0 + dx, y0 + dy))
+        p.setPen(_pen(ACCENT, 1.4))
+        p.drawRect(QRectF(8, 8, 6, 6))
+
+    elif name == "link":
+        p.setPen(_pen(width=1.8))
+        p.drawLine(QPointF(9, 13), QPointF(13, 9))
+        p.drawArc(QRectF(2.5, 10.5, 9, 9), 200 * 16, 160 * 16)
+        p.drawArc(QRectF(10.5, 2.5, 9, 9), 20 * 16, 160 * 16)
+
+    elif name == "form":
+        p.drawRoundedRect(QRectF(3.5, 4, 15, 14), 2, 2)
+        p.setPen(_pen(QColor("#8b93a1"), 1.3))
+        p.drawLine(QPointF(6.5, 8.5), QPointF(15.5, 8.5))
+        p.drawLine(QPointF(6.5, 12), QPointF(15.5, 12))
+        p.setPen(_pen(ACCENT, 1.7))
+        p.drawLine(QPointF(6.5, 15.3), QPointF(11, 15.3))
+
+    elif name == "attach":
+        p.setPen(_pen(width=1.7))
+        path = QPainterPath(QPointF(14.5, 6))
+        path.lineTo(QPointF(7.5, 13))
+        path.cubicTo(QPointF(5.6, 14.9), QPointF(8.1, 17.4), QPointF(10, 15.5))
+        path.lineTo(QPointF(16.5, 9))
+        path.cubicTo(QPointF(19.2, 6.3), QPointF(15.2, 2.3), QPointF(12.5, 5))
+        path.lineTo(QPointF(6, 11.5))
+        p.drawPath(path)
+
     elif name == "watermark":
         p.setPen(_pen(QColor("#8b93a1"), 1.4))
         p.drawRect(QRectF(3.5, 3.5, 15, 15))

@@ -48,6 +48,9 @@ jobs:
       - name: Run text engine tests
         run: python tests/test_textengine.py
 
+      - name: Run feature tests
+        run: python tests/test_features.py
+
       - name: Run GUI tests
         env:
           QT_QPA_PLATFORM: offscreen

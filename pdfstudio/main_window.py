@@ -13,11 +13,15 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QComboBox, QDialog,
                                QSpinBox, QTabWidget, QToolBar, QWidget)
 
 from . import APP_NAME, __version__, icons, theme
-from .canvas import HINTS, PageCanvas, Tool
-from .dialogs import (NewDocumentDialog, PageNumbersDialog, PasswordDialog,
-                      PropertiesDialog, TextEntryDialog, WatermarkDialog)
+from .canvas import HINTS, PageCanvas, Tool, ViewMode
+from .dialogs import (NewDocumentDialog, PageLabelDialog, PageNumbersDialog,
+                      PasswordDialog, PropertiesDialog, SplitDialog,
+                      TextEntryDialog, WatermarkDialog)
 from .document import BLACK, WHITE, PdfDocument, PdfError
-from .panels import InspectorPanel, OutlinePanel, SearchPanel, ThumbnailPanel
+from .doc_features import STAMP_PRESETS
+from .panels import InspectorPanel, SearchPanel, ThumbnailPanel
+from .panels2 import (AttachmentsPanel, BookmarksPanel, CommentsPanel,
+                      FormPanel)
 
 PDF_FILTER = "PDF files (*.pdf)"
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp)"
@@ -44,8 +48,13 @@ TOOLBAR_TOOLS = [
     (Tool.IMAGE, "Image", "image"),
     (Tool.NOTE, "Sticky note", "note"),
     None,
+    (Tool.STAMP, "Stamp", "stamp"),
+    None,
     (Tool.WHITEOUT, "Whiteout", "whiteout"),
     (Tool.REDACT, "Redact", "redact"),
+    None,
+    (Tool.SNAPSHOT, "Snapshot", "snapshot"),
+    (Tool.LINK, "Link", "link"),
 ]
 
 
@@ -153,6 +162,36 @@ class MainWindow(QMainWindow):
         self.act_toggle_side = A("Toggle &Sidebar", self.toggle_sidebar, "F9", "sidebar")
         self.act_toggle_inspect = A("Toggle &Inspector", self.toggle_inspector, "F10")
 
+        # view modes
+        self.act_view_continuous = A("&Continuous Scroll",
+                                     lambda: self.set_view_mode(ViewMode.CONTINUOUS),
+                                     "Ctrl+3", checkable=True)
+        self.act_view_single = A("&Single Page",
+                                 lambda: self.set_view_mode(ViewMode.SINGLE),
+                                 "Ctrl+4", checkable=True)
+        self.act_view_facing = A("&Two-Page Spread",
+                                 lambda: self.set_view_mode(ViewMode.FACING),
+                                 "Ctrl+5", checkable=True)
+        self.act_night = A("&Night Mode", self.toggle_night, "Ctrl+D", checkable=True)
+        self.view_group = QActionGroup(self)
+        for act in (self.act_view_continuous, self.act_view_single, self.act_view_facing):
+            self.view_group.addAction(act)
+        self.act_view_continuous.setChecked(True)
+
+        # document tools
+        self.act_split = A("&Split Document…", self.action_split)
+        self.act_crop = A("&Crop Pages…", self.action_crop)
+        self.act_reset_crop = A("Reset Cro&p", self.action_reset_crop)
+        self.act_images_pdf = A("Insert &Images as Pages…", self.action_images_to_pages)
+        self.act_flatten_annots = A("&Flatten Annotations", self.action_flatten_annots)
+        self.act_page_labels = A("Page &Labels…", self.action_page_labels)
+        self.act_attach = A("&Attach File…", self.action_attach)
+        self.act_bookmarks_auto = A("&Generate Bookmarks from Headings",
+                                    self.action_auto_bookmarks)
+        self.act_form_reset = A("&Reset Form", self.action_form_reset)
+        self.act_form_flatten = A("Flatten &Form", self.action_form_flatten)
+        self.act_snapshot_save = A("Save Snapshot to &File…", self.action_snapshot_file)
+
         self.act_about = A("&About", self.action_about)
         self.act_shortcuts = A("&Keyboard Shortcuts", self.action_shortcuts, "F1")
 
@@ -217,13 +256,31 @@ class MainWindow(QMainWindow):
         for a in (self.act_insert_blank, self.act_delete_pages, self.act_extract):
             m.addAction(a)
         m.addSeparator()
-        for a in (self.act_page_numbers, self.act_watermark):
+        for a in (self.act_crop, self.act_reset_crop, self.act_split,
+                  self.act_images_pdf):
             m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_page_numbers, self.act_page_labels, self.act_watermark):
+            m.addAction(a)
+
+        m = bar.addMenu("&Document")
+        for a in (self.act_form_reset, self.act_form_flatten):
+            m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_bookmarks_auto, self.act_attach, self.act_flatten_annots):
+            m.addAction(a)
+        m.addSeparator()
+        m.addAction(self.act_snapshot_save)
 
         m = bar.addMenu("&View")
         for a in (self.act_zoom_in, self.act_zoom_out, self.act_fit_width,
                   self.act_fit_page, self.act_actual):
             m.addAction(a)
+        m.addSeparator()
+        for a in (self.act_view_continuous, self.act_view_single, self.act_view_facing):
+            m.addAction(a)
+        m.addSeparator()
+        m.addAction(self.act_night)
         m.addSeparator()
         for a in (self.act_prev, self.act_next, self.act_first, self.act_last):
             m.addAction(a)
@@ -301,25 +358,38 @@ class MainWindow(QMainWindow):
         self.side_tabs = QTabWidget()
         self.side_tabs.setDocumentMode(True)
         self.thumbs = ThumbnailPanel(self)
-        self.outline = OutlinePanel(self)
+        self.outline = BookmarksPanel(self)
         self.search_panel = SearchPanel(self)
-        self.side_tabs.addTab(self.thumbs, icons.icon("pages"), "")
-        self.side_tabs.addTab(self.outline, icons.icon("outline"), "")
-        self.side_tabs.addTab(self.search_panel, icons.icon("find"), "")
-        self.side_tabs.setTabToolTip(0, "Page thumbnails")
-        self.side_tabs.setTabToolTip(1, "Bookmarks")
-        self.side_tabs.setTabToolTip(2, "Search")
+        self.comments = CommentsPanel(self)
+        self.forms = FormPanel(self)
+        self.attachments = AttachmentsPanel(self)
+        for widget, icon_name, tip in [
+                (self.thumbs, "pages", "Page thumbnails"),
+                (self.outline, "outline", "Bookmarks"),
+                (self.search_panel, "find", "Search"),
+                (self.comments, "note", "Comments"),
+                (self.forms, "form", "Form fields"),
+                (self.attachments, "attach", "Attachments")]:
+            self.side_tabs.addTab(widget, icons.icon(icon_name), "")
+            self.side_tabs.setTabToolTip(self.side_tabs.count() - 1, tip)
+        self.SIDE_TITLES = ["Pages", "Bookmarks", "Search", "Comments",
+                            "Form fields", "Attachments"]
+        # Six tabs only fit if they stay compact — otherwise the tab bar grows
+        # scroll arrows and half of them become unreachable.
+        bar = self.side_tabs.tabBar()
+        bar.setExpanding(False)
+        bar.setUsesScrollButtons(False)
+        bar.setIconSize(QSize(18, 18))
+        bar.setStyleSheet("QTabBar::tab { padding: 6px 6px; margin: 0; }")
 
         self.side_dock = QDockWidget("Pages", self)
         self.side_dock.setObjectName("sideDock")
         self.side_dock.setWidget(self.side_tabs)
         self.side_dock.setFeatures(QDockWidget.DockWidgetMovable |
                                    QDockWidget.DockWidgetClosable)
-        self.side_dock.setMinimumWidth(210)
+        self.side_dock.setMinimumWidth(248)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.side_dock)
-        self.side_tabs.currentChanged.connect(
-            lambda i: self.side_dock.setWindowTitle(
-                ["Pages", "Bookmarks", "Search"][i] if i < 3 else "Pages"))
+        self.side_tabs.currentChanged.connect(self._side_tab_changed)
 
         self.inspector = InspectorPanel(self)
         self.inspector.changed.connect(self._inspector_changed)
@@ -353,7 +423,23 @@ class MainWindow(QMainWindow):
             self.thumbs.sync_current(page)
         else:
             self.thumbs.refresh_page(page)
+        self._refresh_side_panel()
         self._sync_ui()
+
+    def _refresh_side_panel(self):
+        """Repopulate only the panel on screen — the others catch up when shown."""
+        current = self.side_tabs.currentWidget()
+        for panel in (self.comments, self.forms, self.attachments, self.outline):
+            if panel is current:
+                panel.populate()
+                return
+
+    def _side_tab_changed(self, index: int):
+        titles = getattr(self, "SIDE_TITLES", [])
+        self.side_dock.setWindowTitle(titles[index] if index < len(titles) else "Pages")
+        widget = self.side_tabs.widget(index)
+        if hasattr(widget, "populate") and widget is not self.thumbs:
+            widget.populate()
 
     def _sync_ui(self):
         open_ = self.doc.is_open()
@@ -509,6 +595,8 @@ class MainWindow(QMainWindow):
             canvas.stroke_width = float(value)
         elif key == "fill":
             self.fill_shapes = bool(value)
+        elif key == "stamp":
+            canvas.stamp_text = str(value).strip() or "APPROVED"
         elif key in ("pick_color", "pick_text_color"):
             self.pick_color()
         elif key == "delete_annot":
@@ -517,6 +605,15 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------- tool commits
 
     def commit_marquee(self, tool: str, index: int, rect: fitz.Rect):
+        if tool == Tool.CROP:
+            pages = self._target_pages()
+            self.doc.crop_pages(pages, rect)
+            self.set_tool(Tool.SELECT)
+            self.statusBar().showMessage(f"Cropped {len(pages)} page(s)", 4000)
+            return
+        if tool == Tool.LINK:
+            self._make_link(index, rect)
+            return
         try:
             if tool == Tool.RECT:
                 self.doc.add_shape(index, "rect", rect, color=self._rgb(),
@@ -534,6 +631,24 @@ class MainWindow(QMainWindow):
                 self._place_image(index, rect)
         except Exception as exc:
             QMessageBox.warning(self, APP_NAME, f"Could not apply that: {exc}")
+
+    def _make_link(self, index: int, rect: fitz.Rect):
+        target, ok = QInputDialog.getText(
+            self, "Create link",
+            "Web address, or a page number to jump to:", text="https://")
+        if not ok or not target.strip():
+            return
+        target = target.strip()
+        if target.isdigit():
+            page = max(1, min(int(target), self.doc.page_count)) - 1
+            self.doc.add_goto_link(index, rect, page)
+            self.statusBar().showMessage(f"Link to page {page + 1} created", 3000)
+        else:
+            if "://" not in target:
+                target = "https://" + target
+            self.doc.add_uri_link(index, rect, target)
+            self.statusBar().showMessage("Link created", 3000)
+        self.set_tool(Tool.SELECT)
 
     def commit_markup(self, tool: str, index: int, rects):
         kind = {Tool.HIGHLIGHT: "highlight", Tool.UNDERLINE: "underline",
@@ -931,6 +1046,172 @@ class MainWindow(QMainWindow):
             self.open_path(path)
 
     # ------------------------------------------------------------------ misc
+
+    # ------------------------------------------------------ view and tools
+
+    def set_view_mode(self, mode: str):
+        self.canvas.commit_edit()
+        self.canvas.set_view_mode(mode)
+        action = {ViewMode.CONTINUOUS: self.act_view_continuous,
+                  ViewMode.SINGLE: self.act_view_single,
+                  ViewMode.FACING: self.act_view_facing}.get(mode)
+        if action:
+            action.setChecked(True)
+        self.statusBar().showMessage(
+            {ViewMode.CONTINUOUS: "Continuous scrolling",
+             ViewMode.SINGLE: "One page at a time",
+             ViewMode.FACING: "Two-page spread"}[mode], 3000)
+
+    def toggle_night(self):
+        on = self.act_night.isChecked()
+        self.canvas.set_night_mode(on)
+        self.statusBar().showMessage(
+            "Night mode on — colours inverted for reading in the dark" if on
+            else "Night mode off", 3000)
+
+    def commit_stamp(self, index: int, point):
+        try:
+            self.doc.add_stamp(index, self.canvas.stamp_text, point,
+                               fontsize=float(self.canvas.font_size) * 1.6,
+                               rotate=0)
+            self.statusBar().showMessage(f"Placed a {self.canvas.stamp_text} stamp", 3000)
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, f"Could not place the stamp: {exc}")
+
+    def follow_link(self, index: int, link: dict) -> bool:
+        """Act on a link the user clicked. Returns True if it was handled."""
+        kind = link.get("kind")
+        if kind == fitz.LINK_GOTO:
+            target = link.get("page", 0)
+            self.goto_page(int(target))
+            return True
+        uri = link.get("uri")
+        if kind == fitz.LINK_URI and uri:
+            answer = QMessageBox.question(
+                self, "Open link",
+                f"Open this address in your browser?\n\n{uri}",
+                QMessageBox.Open | QMessageBox.Cancel)
+            if answer == QMessageBox.Open:
+                from PySide6.QtGui import QDesktopServices
+                from PySide6.QtCore import QUrl
+                QDesktopServices.openUrl(QUrl(uri))
+            return True
+        return False
+
+    def choose_field_option(self, index: int, field):
+        choice, ok = QInputDialog.getItem(
+            self, field.label or "Choose", "Value:",
+            [str(c) for c in field.choices],
+            max(0, [str(c) for c in field.choices].index(str(field.value))
+                if str(field.value) in [str(c) for c in field.choices] else 0),
+            False)
+        if ok:
+            self.doc.set_field_value(index, field.name, choice)
+            self.canvas.invalidate_cache(index)
+
+    # -------------------------------------------------- document commands
+
+    def action_split(self):
+        if not self.doc.is_open():
+            return
+        dialog = SplitDialog(self, self.doc.page_count, bool(self.doc.get_toc()))
+        if dialog.exec() != QDialog.Accepted:
+            return
+        mode, size, ranges = dialog.values()
+        out_dir = QFileDialog.getExistingDirectory(
+            self, "Where should the pieces go?", self._last_dir())
+        if not out_dir:
+            return
+        stem = os.path.splitext(os.path.basename(self.doc.path or "document"))[0]
+        try:
+            written = self.doc.split_to_files(out_dir, mode=mode, size=size,
+                                              ranges=ranges, stem=stem)
+        except Exception as exc:
+            QMessageBox.critical(self, APP_NAME, f"Split failed: {exc}")
+            return
+        QMessageBox.information(
+            self, "Split complete",
+            f"Wrote {len(written)} file(s) to:\n{out_dir}")
+
+    def action_crop(self):
+        if not self.doc.is_open():
+            return
+        self.set_tool(Tool.CROP)
+        self.statusBar().showMessage(
+            "Drag the area to keep — it is applied to the pages selected in the "
+            "thumbnails, or the current page", 8000)
+
+    def action_reset_crop(self):
+        if self.doc.is_open():
+            self.doc.reset_crop(self._target_pages())
+            self.statusBar().showMessage("Crop reset", 3000)
+
+    def action_images_to_pages(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Choose images to add as pages", self._last_dir(), IMAGE_FILTER)
+        if not paths:
+            return
+        added = self.doc.images_to_pages(paths, at=self.canvas.current_page + 1)
+        self.statusBar().showMessage(f"Added {added} page(s) from images", 4000)
+
+    def action_flatten_annots(self):
+        if not self.doc.is_open():
+            return
+        if QMessageBox.question(
+                self, "Flatten annotations",
+                "This bakes every annotation into the page so it can no longer "
+                "be selected or edited.\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        count = self.doc.flatten_annotations()
+        self.canvas.clear_annot_selection()
+        self.statusBar().showMessage(f"Flattened {count} annotation(s)", 4000)
+
+    def action_page_labels(self):
+        dialog = PageLabelDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            style, prefix, start = dialog.values()
+            if self.doc.set_page_numbering(style=style, prefix=prefix, start=start):
+                self.statusBar().showMessage("Page labels updated", 3000)
+
+    def action_attach(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Attach a file to this PDF",
+                                              self._last_dir())
+        if path and self.doc.attach_file(path):
+            self.side_tabs.setCurrentWidget(self.attachments)
+            self.attachments.populate()
+            self.statusBar().showMessage(f"Attached {os.path.basename(path)}", 3000)
+
+    def action_auto_bookmarks(self):
+        self.side_tabs.setCurrentWidget(self.outline)
+        self.outline._auto()
+
+    def action_form_reset(self):
+        if self.doc.is_open() and self.doc.has_form:
+            self.side_tabs.setCurrentWidget(self.forms)
+            self.forms._reset()
+        else:
+            self.statusBar().showMessage("This document has no form fields", 3000)
+
+    def action_form_flatten(self):
+        if self.doc.is_open() and self.doc.has_form:
+            self.side_tabs.setCurrentWidget(self.forms)
+            self.forms._flatten()
+        else:
+            self.statusBar().showMessage("This document has no form fields", 3000)
+
+    def action_snapshot_file(self):
+        image = QApplication.clipboard().image()
+        if image.isNull():
+            self.statusBar().showMessage(
+                "Take a snapshot first with the Snapshot tool", 4000)
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save snapshot", os.path.join(self._last_dir(), "snapshot.png"),
+            "PNG image (*.png)")
+        if path:
+            image.save(path)
+            self.statusBar().showMessage("Snapshot saved", 3000)
 
     def action_about(self):
         QMessageBox.about(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fitz  # PyMuPDF
 
+from .doc_features import DocumentFeatures
 from .fonts import FontResolver
 from .textengine import EditableText
 
@@ -27,7 +28,7 @@ class PdfError(Exception):
     pass
 
 
-class PdfDocument:
+class PdfDocument(DocumentFeatures):
     """A PDF document with snapshot-based undo/redo.
 
     The document is always held fully in memory (opened from bytes), so saving

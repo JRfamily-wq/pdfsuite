@@ -17,6 +17,7 @@ pip install "pyinstaller>=6.3" || goto :error
 
 python tests\test_document.py || goto :error
 python tests\test_textengine.py || goto :error
+python tests\test_features.py || goto :error
 set QT_QPA_PLATFORM=offscreen
 python tests\test_gui.py || goto :error
 set QT_QPA_PLATFORM=

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 from pdfstudio import theme
 from pdfstudio.canvas import Tool
 from pdfstudio.main_window import MainWindow
+from test_features import build_form
 from test_textengine import TMP, build
 
 
@@ -220,6 +221,127 @@ def main():
     pump(200)
     assert "Hello" in win.doc.page_text(0), "new text box was not written"
     print("new text box via drag: ok")
+
+    # ----------------------------------------------------------- view modes
+    from pdfstudio.canvas import ViewMode
+    win.doc.insert_blank_page(1, like=0)
+    win.doc.insert_blank_page(2, like=0)
+    pump(200)
+    win.set_view_mode(ViewMode.SINGLE)
+    pump(150)
+    assert len(canvas.slots) == 1, f"single mode laid out {len(canvas.slots)} pages"
+    win.goto_page(1)
+    pump(150)
+    assert canvas.slots[0].index == 1, "single mode did not follow the page change"
+
+    win.set_view_mode(ViewMode.FACING)
+    pump(150)
+    assert len(canvas.slots) == 2, f"facing mode laid out {len(canvas.slots)} pages"
+    left, right = canvas.slots[0], canvas.slots[1]
+    assert right.left > left.left, "facing pages are not side by side"
+    assert abs(left.top - right.top) < 1, "facing pages are not level"
+
+    win.set_view_mode(ViewMode.CONTINUOUS)
+    pump(150)
+    assert len(canvas.slots) == win.doc.page_count
+    print("view modes single / facing / continuous: ok")
+
+    canvas.set_night_mode(True)
+    pump(150)
+    dark = canvas.pixmap_for(0).toImage().pixelColor(4, 4)
+    canvas.set_night_mode(False)
+    pump(150)
+    light = canvas.pixmap_for(0).toImage().pixelColor(4, 4)
+    assert dark != light, "night mode did not change the rendering"
+    assert dark.lightness() < light.lightness(), "night mode did not darken the page"
+    print("night mode inverts the page: ok")
+
+    win.doc.undo(); win.doc.undo()
+    pump(200)
+
+    # ------------------------------------------------------------- snapshot
+    image = canvas.take_snapshot(0, fitz.Rect(60, 70, 320, 130))
+    assert not image.isNull() and image.width() > 100, "snapshot produced nothing"
+    assert not QApplication.clipboard().image().isNull(), "snapshot not on the clipboard"
+    print(f"snapshot to clipboard ({image.width()}x{image.height()}): ok")
+
+    # ---------------------------------------------------------------- stamp
+    win.canvas.stamp_text = "APPROVED"
+    win.commit_stamp(0, fitz.Point(300, 640))
+    pump(150)
+    assert "APPROVED" in win.doc.page_text(0), "stamp text not on the page"
+    print("stamp placement: ok")
+    win.doc.undo()
+
+    # ------------------------------------------------------------- comments
+    win.doc.add_note(0, fitz.Point(420, 240), "Reviewer note")
+    pump(150)
+    win.side_tabs.setCurrentWidget(win.comments)
+    win.comments.populate()
+    pump(150)
+    assert win.comments.list.count() >= 1, "comments panel is empty"
+    win.comments.list.setCurrentRow(win.comments.list.count() - 1)
+    assert win.comments._current() is not None
+    win.comments.note.setPlainText("Edited via the panel")
+    win.comments._save_note()
+    pump(150)
+    assert any(a["content"] == "Edited via the panel"
+               for a in win.doc.all_annotations()), "comment edit did not stick"
+    print("comments panel lists and edits: ok")
+
+    # ------------------------------------------------------------ bookmarks
+    win.doc.set_toc([[1, "First", 1]])
+    win.side_tabs.setCurrentWidget(win.outline)
+    win.outline.populate()
+    pump(150)
+    assert win.outline.tree.topLevelItemCount() == 1
+    win.doc.add_bookmark("Second", page=0)
+    win.outline.populate()
+    assert win.outline.tree.topLevelItemCount() == 2, "bookmarks panel did not refresh"
+    print("bookmarks panel: ok")
+
+    # ---------------------------------------------------------------- forms
+    win2 = MainWindow()
+    win2.resize(1400, 900)
+    win2.show()
+    win2.open_path(build_form(os.path.join(TMP, "gui-form.pdf")))
+    pump(300)
+    assert win2.doc.has_form
+    win2.side_tabs.setCurrentWidget(win2.forms)
+    win2.forms.populate()
+    pump(150)
+    assert win2.forms.list.count() == 3, win2.forms.list.count()
+
+    win2.set_tool(Tool.SELECT)
+    assert win2.doc.field_at(0, fitz.Point(200, 106)) is not None
+    target = canvas_point(win2.canvas, 0, 200, 106)
+    click(win2.canvas, target, QEvent.MouseButtonPress)
+    click(win2.canvas, target, QEvent.MouseButtonRelease, Qt.NoButton)
+    pump(150)
+    assert win2.canvas.active_field is not None, "clicking a field did not focus it"
+    for ch in "Grace":
+        key(win2.canvas, Qt.Key_unknown, ch)
+    key(win2.canvas, Qt.Key_Return)
+    pump(200)
+    values = {f.name: f.value for f in win2.doc.form_fields()}
+    assert values["fullname"] == "Grace", values
+    print("click a form field and type into it: ok")
+
+    box = win2.doc.field_at(0, fitz.Point(168, 147))
+    assert box is not None and box.name == "subscribe", box
+    spot = canvas_point(win2.canvas, 0, 168, 147)
+    click(win2.canvas, spot, QEvent.MouseButtonPress)
+    click(win2.canvas, spot, QEvent.MouseButtonRelease, Qt.NoButton)
+    pump(200)
+    assert {f.name: f.checked for f in win2.doc.form_fields()}["subscribe"], \
+        "clicking the checkbox did not tick it"
+    print("tick a checkbox by clicking it: ok")
+
+    win2.forms.populate()
+    listed = " ".join(win2.forms.list.item(i).text()
+                      for i in range(win2.forms.list.count()))
+    assert "Grace" in listed, listed
+    print("form panel reflects canvas edits: ok")
 
     if shot:
         win.set_tool(Tool.EDIT_TEXT)

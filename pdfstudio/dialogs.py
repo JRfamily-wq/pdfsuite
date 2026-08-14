@@ -153,3 +153,111 @@ class PropertiesDialog(QDialog):
 
     def values(self) -> dict:
         return {key: edit.text() for key, edit in self.edits.items()}
+
+
+class SplitDialog(QDialog):
+    """How to break a document into pieces."""
+
+    def __init__(self, parent, page_count: int, has_bookmarks: bool):
+        super().__init__(parent)
+        self.setWindowTitle("Split document")
+        self.page_count = page_count
+        layout = QVBoxLayout(self)
+
+        self.mode = QComboBox()
+        self.mode.addItem(f"Every N pages (document has {page_count})", "every")
+        self.mode.addItem("Custom page ranges", "ranges")
+        if has_bookmarks:
+            self.mode.addItem("At each top-level bookmark", "bookmarks")
+        layout.addWidget(QLabel("Split:"))
+        layout.addWidget(self.mode)
+
+        form = QFormLayout()
+        self.size = QSpinBox()
+        self.size.setRange(1, max(1, page_count))
+        self.size.setValue(1)
+        form.addRow("Pages per file:", self.size)
+        self.ranges = QLineEdit()
+        self.ranges.setPlaceholderText("e.g. 1-3, 4-8, 9")
+        form.addRow("Ranges:", self.ranges)
+        layout.addLayout(form)
+
+        self.hint = QLabel("")
+        self.hint.setProperty("dim", "true")
+        self.hint.setWordWrap(True)
+        layout.addWidget(self.hint)
+        layout.addWidget(_buttons(self))
+
+        self.mode.currentIndexChanged.connect(self._sync)
+        self._sync()
+
+    def _sync(self):
+        mode = self.mode.currentData()
+        self.size.setEnabled(mode == "every")
+        self.ranges.setEnabled(mode == "ranges")
+        self.hint.setText({
+            "every": "Each file gets the given number of pages, in order.",
+            "ranges": "Page numbers start at 1. Separate ranges with commas.",
+            "bookmarks": "A new file starts at every top-level bookmark.",
+        }.get(mode, ""))
+
+    def parse_ranges(self):
+        result = []
+        for chunk in self.ranges.text().replace(";", ",").split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            try:
+                if "-" in chunk:
+                    a, b = chunk.split("-", 1)
+                    start, end = int(a) - 1, int(b) - 1
+                else:
+                    start = end = int(chunk) - 1
+            except ValueError:
+                continue
+            if 0 <= start <= end < self.page_count:
+                result.append((start, end))
+        return result
+
+    def accept(self):
+        if self.mode.currentData() == "ranges" and not self.parse_ranges():
+            self.hint.setText("Enter at least one valid range, such as 1-3.")
+            return
+        super().accept()
+
+    def values(self):
+        return self.mode.currentData(), self.size.value(), self.parse_ranges()
+
+
+class PageLabelDialog(QDialog):
+    """Page labels are what a reader shows in its page box (i, ii, A-1...)."""
+
+    STYLES = [("1, 2, 3 (decimal)", "D"), ("i, ii, iii (roman lower)", "r"),
+              ("I, II, III (roman upper)", "R"), ("a, b, c (letters lower)", "a"),
+              ("A, B, C (letters upper)", "A")]
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Page labels")
+        form = QFormLayout(self)
+        self.style = QComboBox()
+        for label, code in self.STYLES:
+            self.style.addItem(label, code)
+        self.prefix = QLineEdit()
+        self.prefix.setPlaceholderText("optional, e.g. A-")
+        self.start = QSpinBox()
+        self.start.setRange(1, 9999)
+        self.start.setValue(1)
+        form.addRow("Numbering:", self.style)
+        form.addRow("Prefix:", self.prefix)
+        form.addRow("Start at:", self.start)
+        note = QLabel("Labels change what a PDF reader displays as the page "
+                      "number. They do not print onto the page — use Add Page "
+                      "Numbers for that.")
+        note.setWordWrap(True)
+        note.setProperty("dim", "true")
+        form.addRow(note)
+        form.addRow(_buttons(self))
+
+    def values(self):
+        return self.style.currentData(), self.prefix.text(), self.start.value()

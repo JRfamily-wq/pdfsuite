@@ -41,10 +41,20 @@ class Tool:
     REDACT = "redact"
     IMAGE = "image"
     NOTE = "note"
+    STAMP = "stamp"
+    SNAPSHOT = "snapshot"
+    LINK = "link"
+    CROP = "crop"
+
+
+class ViewMode:
+    CONTINUOUS = "continuous"
+    SINGLE = "single"
+    FACING = "facing"
 
 
 MARQUEE_TOOLS = {Tool.RECT, Tool.ELLIPSE, Tool.WHITEOUT, Tool.REDACT,
-                 Tool.IMAGE, Tool.TEXT}
+                 Tool.IMAGE, Tool.TEXT, Tool.SNAPSHOT, Tool.LINK, Tool.CROP}
 LINE_TOOLS = {Tool.LINE, Tool.ARROW}
 TEXT_MARKUP_TOOLS = {Tool.HIGHLIGHT, Tool.UNDERLINE, Tool.STRIKEOUT}
 
@@ -53,6 +63,7 @@ CURSORS = {
     Tool.TEXT_SELECT: Qt.IBeamCursor,
     Tool.EDIT_TEXT: Qt.IBeamCursor,
     Tool.NOTE: Qt.PointingHandCursor,
+    Tool.STAMP: Qt.PointingHandCursor,
 }
 
 HINTS = {
@@ -72,6 +83,10 @@ HINTS = {
     Tool.REDACT: "Drag to permanently redact an area",
     Tool.IMAGE: "Drag a box (or click) to place an image",
     Tool.NOTE: "Click to drop a sticky note",
+    Tool.STAMP: "Click to place the stamp chosen in the Properties panel",
+    Tool.SNAPSHOT: "Drag a region to copy it to the clipboard as an image",
+    Tool.LINK: "Drag a box to turn it into a clickable link",
+    Tool.CROP: "Drag the area to keep, then confirm — crops the selected pages",
 }
 
 
@@ -101,9 +116,14 @@ class PageCanvas(QWidget):
         self.color = QColor(220, 50, 50)
         self.stroke_width = 2.0
         self.font_size = 14
+        self.view_mode = ViewMode.CONTINUOUS
+        self.night_mode = False
+        self.stamp_text = "APPROVED"
         self.slots: list[PageSlot] = []
         self._cache: dict[tuple, QPixmap] = {}
         self._current_page = 0
+        self.active_field = None        # form field being edited
+        self._field_buffer = ""
 
         # interaction state
         self._press_pos: QPoint | None = None
@@ -179,6 +199,10 @@ class PageCanvas(QWidget):
         page = self.doc.page(self._current_page)
         avail_w = max(120, self.viewport_width() - 2 * CANVAS_MARGIN - 16)
         avail_h = max(120, self.viewport_height() - 2 * CANVAS_MARGIN)
+        # Facing pages share the width between two sheets plus the gutter.
+        columns = 2 if self.view_mode == ViewMode.FACING else 1
+        if columns == 2:
+            avail_w = (avail_w - PAGE_GAP) / 2
         zw = avail_w / max(1.0, page.rect.width)
         if self.fit_mode == "page":
             zh = avail_h / max(1.0, page.rect.height)
@@ -186,6 +210,19 @@ class PageCanvas(QWidget):
         else:
             self.zoom = zw
         self.zoom = max(0.08, min(self.zoom, 8.0))
+
+    def visible_pages(self) -> list[int]:
+        """Which page indices the current view mode puts on screen."""
+        count = self.doc.page_count
+        if self.view_mode == ViewMode.CONTINUOUS:
+            return list(range(count))
+        if self.view_mode == ViewMode.SINGLE:
+            return [self._current_page]
+        # Facing: keep page 1 alone on the right, like a printed book.
+        current = self._current_page
+        left = current if current % 2 == 1 else current - 1
+        pair = [p for p in (left, left + 1) if 0 <= p < count]
+        return pair or [current]
 
     def relayout(self):
         self.slots.clear()
@@ -203,24 +240,53 @@ class PageCanvas(QWidget):
             self.sel_annot = None
             self.sel_rect = None
         self.compute_fit()
-        widest = 0.0
-        y = float(CANVAS_MARGIN)
+        pages = self.visible_pages()
         sizes = []
-        for i in range(self.doc.page_count):
+        for i in pages:
             rect = self.doc.page(i).rect
-            w, h = rect.width * self.zoom, rect.height * self.zoom
-            sizes.append((w, h))
-            widest = max(widest, w)
-        canvas_w = max(widest + 2 * CANVAS_MARGIN, self.viewport_width())
-        for i, (w, h) in enumerate(sizes):
-            self.slots.append(PageSlot(i, y, w, h, (canvas_w - w) / 2))
-            y += h + PAGE_GAP
-        total_h = y - PAGE_GAP + CANVAS_MARGIN
+            sizes.append((i, rect.width * self.zoom, rect.height * self.zoom))
+
+        if self.view_mode == ViewMode.FACING and len(sizes) == 2:
+            spread_w = sizes[0][1] + PAGE_GAP + sizes[1][1]
+            canvas_w = max(spread_w + 2 * CANVAS_MARGIN, self.viewport_width())
+            x = (canvas_w - spread_w) / 2
+            top = float(CANVAS_MARGIN)
+            for index, w, h in sizes:
+                self.slots.append(PageSlot(index, top, w, h, x))
+                x += w + PAGE_GAP
+            total_h = top + max(s[2] for s in sizes) + CANVAS_MARGIN
+        else:
+            widest = max((s[1] for s in sizes), default=0.0)
+            canvas_w = max(widest + 2 * CANVAS_MARGIN, self.viewport_width())
+            y = float(CANVAS_MARGIN)
+            for index, w, h in sizes:
+                self.slots.append(PageSlot(index, y, w, h, (canvas_w - w) / 2))
+                y += h + PAGE_GAP
+            total_h = y - PAGE_GAP + CANVAS_MARGIN
+
         self.setFixedSize(int(canvas_w), int(max(total_h, 100)))
         self.update()
 
+    def set_view_mode(self, mode: str):
+        self.view_mode = mode
+        self.relayout()
+        if mode != ViewMode.CONTINUOUS:
+            area = self._scroll_area()
+            if area is not None:
+                area.verticalScrollBar().setValue(0)
+
+    def set_night_mode(self, on: bool):
+        self.night_mode = bool(on)
+        self.invalidate_cache()
+        self.update()
+
     def slot(self, index: int) -> PageSlot | None:
-        return self.slots[index] if 0 <= index < len(self.slots) else None
+        """Slot for a *page* index. In single/facing modes only some pages are
+        laid out, so this cannot index self.slots positionally."""
+        for slot in self.slots:
+            if slot.index == index:
+                return slot
+        return None
 
     def page_at(self, pos: QPoint):
         """(page index, page-space point) for a canvas point, or (None, None)."""
@@ -276,7 +342,7 @@ class PageCanvas(QWidget):
 
     def pixmap_for(self, index: int) -> QPixmap | None:
         dpr = self.devicePixelRatioF() or 1.0
-        key = (index, round(self.zoom, 4), round(dpr, 2))
+        key = (index, round(self.zoom, 4), round(dpr, 2), self.night_mode)
         pix = self._cache.get(key)
         if pix is not None:
             return pix
@@ -286,6 +352,8 @@ class PageCanvas(QWidget):
             return None
         image = QImage(raw.samples, raw.width, raw.height, raw.stride,
                        QImage.Format_RGB888).copy()
+        if self.night_mode:
+            image.invertPixels()
         pix = QPixmap.fromImage(image)
         pix.setDevicePixelRatio(dpr)
         if len(self._cache) > 24:
@@ -317,6 +385,17 @@ class PageCanvas(QWidget):
         return area
 
     def scroll_to_page(self, index: int, smooth_top: bool = True):
+        index = max(0, min(index, self.doc.page_count - 1)) if self.doc.is_open() else 0
+        # Single and facing modes show a different set of pages entirely, so
+        # moving to a page means re-laying out rather than scrolling.
+        if self.view_mode != ViewMode.CONTINUOUS:
+            self._current_page = index
+            self.relayout()
+            area = self._scroll_area()
+            if area is not None:
+                area.verticalScrollBar().setValue(0)
+            self.page_changed.emit(index)
+            return
         slot = self.slot(index)
         area = self._scroll_area()
         if slot is None or area is None:
@@ -338,6 +417,8 @@ class PageCanvas(QWidget):
             hbar.setValue(int(box.center().x() - area.viewport().width() / 2))
 
     def update_current_page(self):
+        if self.view_mode != ViewMode.CONTINUOUS:
+            return          # the layout, not the scrollbar, decides the page
         view = self.visible_rect()
         centre = view.center().y()
         best, best_dist = self._current_page, None
@@ -550,6 +631,89 @@ class PageCanvas(QWidget):
             self.text_sel.append((index, fitz.Rect(word[:4])))
         self.update()
 
+    # ---------------------------------------------------------- form fields
+
+    def begin_field(self, index: int, field) -> bool:
+        """Start editing a form field, or toggle it if it is a tick box."""
+        from .doc_features import (FIELD_CHECKBOX, FIELD_CHOICE, FIELD_RADIO,
+                                   FIELD_TEXT)
+        if field.read_only:
+            self.status_message.emit(f"'{field.label}' is read-only")
+            return False
+        if field.kind in (FIELD_CHECKBOX, FIELD_RADIO):
+            self.commit_field()
+            self.doc.set_field_value(index, field.name, not field.checked)
+            self.invalidate_cache(index)
+            self.status_message.emit(
+                f"{field.label}: {'ticked' if not field.checked else 'cleared'}")
+            return True
+        if field.kind == FIELD_CHOICE:
+            self.host.choose_field_option(index, field)
+            return True
+        if field.kind != FIELD_TEXT:
+            return False
+        self.commit_field()
+        self.active_field = (index, field)
+        self._field_buffer = str(field.value or "")
+        self._caret_on = True
+        self._caret_timer.start()
+        self.edit_state_changed.emit()
+        self.update()
+        return True
+
+    def commit_field(self):
+        if self.active_field is None:
+            return
+        index, field = self.active_field
+        buffer = self._field_buffer
+        self.active_field = None
+        self._field_buffer = ""
+        self._caret_timer.stop()
+        if buffer != str(field.value or ""):
+            self.doc.set_field_value(index, field.name, buffer)
+            self.invalidate_cache(index)
+        self.edit_state_changed.emit()
+        self.update()
+
+    def cancel_field(self):
+        self.active_field = None
+        self._field_buffer = ""
+        self._caret_timer.stop()
+        self.update()
+
+    def _handle_field_key(self, event: QKeyEvent) -> bool:
+        index, field = self.active_field
+        key = event.key()
+        self._caret_on = True
+        if key == Qt.Key_Escape:
+            self.cancel_field()
+        elif key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Tab):
+            self.commit_field()
+            if key == Qt.Key_Tab:
+                self.focus_next_field(index, field)
+        elif key == Qt.Key_Backspace:
+            self._field_buffer = self._field_buffer[:-1]
+        elif event.modifiers() & Qt.ControlModifier and key == Qt.Key_V:
+            self._field_buffer += QApplication.clipboard().text().replace("\n", " ")
+        elif event.text() and event.text().isprintable():
+            if not field.max_len or len(self._field_buffer) < field.max_len:
+                self._field_buffer += event.text()
+        else:
+            return False
+        self.update()
+        return True
+
+    def focus_next_field(self, index: int, field):
+        fields = [f for f in self.doc.form_fields() if not f.read_only]
+        order = sorted(fields, key=lambda f: (f.page, round(f.rect.y0, 1), f.rect.x0))
+        for i, candidate in enumerate(order):
+            if candidate.name == field.name and candidate.page == index:
+                nxt = order[(i + 1) % len(order)]
+                self.scroll_to_page(nxt.page)
+                self.begin_field(nxt.page, nxt)
+                self.ensure_visible_rect(nxt.page, nxt.rect)
+                return
+
     # --------------------------------------------------------- mouse events
 
     def mousePressEvent(self, event):
@@ -590,7 +754,23 @@ class PageCanvas(QWidget):
                     return
             self.commit_edit()
 
-        # 2. tool-specific behaviour
+        # 2. a form field always wins a plain click — filling a form should
+        #    never require hunting for the right tool first
+        if self.tool in (Tool.SELECT, Tool.EDIT_TEXT, Tool.TEXT_SELECT):
+            field = self.doc.field_at(index, page_pt) if self.doc.has_form else None
+            if field is not None:
+                if self.active_field and self.active_field[1].name == field.name:
+                    return
+                self.begin_field(index, field)
+                return
+        if self.active_field is not None:
+            self.commit_field()
+
+        # 3. tool-specific behaviour
+        if self.tool == Tool.STAMP:
+            self.host.commit_stamp(index, page_pt)
+            return
+
         if self.tool == Tool.EDIT_TEXT:
             if self.begin_edit(index, page_pt):
                 self._mode = "caret"
@@ -611,6 +791,9 @@ class PageCanvas(QWidget):
                 self._orig_rect = fitz.Rect(self.sel_rect)
                 return
             self.clear_annot_selection()
+            link = self.doc.link_at(index, page_pt)
+            if link is not None and self.host.follow_link(index, link):
+                return
             block = self.doc.editable_at(index, page_pt)
             if block is not None:
                 # Clicking text with the arrow tool jumps straight into editing.
@@ -766,6 +949,8 @@ class PageCanvas(QWidget):
                     rect = fitz.Rect(rect.x0, rect.y0, rect.x0 + 300,
                                      rect.y0 + self.font_size * 1.4)
                 self.begin_new_text(index, rect)
+            elif self.tool == Tool.SNAPSHOT and travel > 4:
+                self.take_snapshot(index, rect)
             elif travel > 4:
                 self.host.commit_marquee(self.tool, index, rect)
             elif self.tool == Tool.IMAGE:
@@ -778,6 +963,26 @@ class PageCanvas(QWidget):
                 self.host.commit_markup(self.tool, index, rects)
                 self.clear_text_selection()
         self.update()
+
+    def take_snapshot(self, index: int, rect: fitz.Rect, zoom: float = 3.0) -> QImage:
+        """Copy a region of the page to the clipboard as a crisp image.
+
+        Rendered fresh at high resolution rather than lifted off the screen
+        pixmap, so the copy is sharp no matter the current zoom.
+        """
+        try:
+            page = self.doc.page(index)
+            clip = fitz.Rect(rect) & page.rect
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
+        except Exception as exc:
+            self.status_message.emit(f"Could not copy that region: {exc}")
+            return QImage()
+        image = QImage(pix.samples, pix.width, pix.height, pix.stride,
+                       QImage.Format_RGB888).copy()
+        QGuiApplication.clipboard().setImage(image)
+        self.status_message.emit(
+            f"Copied a {pix.width}×{pix.height} image to the clipboard")
+        return image
 
     def _start_pan(self, pos: QPoint):
         area = self._scroll_area()
@@ -821,7 +1026,10 @@ class PageCanvas(QWidget):
     # ------------------------------------------------------ keyboard events
 
     def keyPressEvent(self, event: QKeyEvent):
-        if event.key() == Qt.Key_Space and not event.isAutoRepeat() and self.edit is None:
+        if self.active_field is not None and self._handle_field_key(event):
+            return
+        if (event.key() == Qt.Key_Space and not event.isAutoRepeat()
+                and self.edit is None and self.active_field is None):
             self._space_pan = True
             self.setCursor(Qt.OpenHandCursor)
             return
@@ -983,9 +1191,49 @@ class PageCanvas(QWidget):
             for rect in self.annot_handles().values():
                 painter.drawRect(rect)
 
+        # form fields: outline them so a fillable PDF announces itself
+        if self.doc.has_form and self.tool in (Tool.SELECT, Tool.EDIT_TEXT,
+                                               Tool.TEXT_SELECT):
+            self._paint_fields(painter, index)
+
         # the block being edited
         if self.edit is not None and self.edit_page == index:
             self._paint_edit(painter)
+
+    def _paint_fields(self, painter: QPainter, index: int):
+        """Tint fillable fields, and draw the one being typed into."""
+        active_name = (self.active_field[1].name
+                       if self.active_field and self.active_field[0] == index else None)
+        for field in self.doc.form_fields(index):
+            box = self.rect_to_canvas(index, field.rect)
+            if field.name == active_name:
+                painter.fillRect(box, QColor(255, 255, 255))
+                painter.setPen(QPen(theme.CARET_COLOR, 1.6))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(box)
+                font = QFont("DejaVu Sans")
+                font.setPixelSize(max(8, int(min(box.height() * 0.62, 11 * self.zoom))))
+                painter.setFont(font)
+                painter.setPen(QColor(10, 10, 10))
+                metrics = QFontMetricsF(font)
+                text = self._field_buffer
+                inner = box.adjusted(4, 0, -4, 0)
+                while text and metrics.horizontalAdvance(text) > inner.width():
+                    text = text[1:]
+                baseline = box.center().y() + metrics.ascent() / 2 - 1
+                painter.drawText(QPointF(inner.left(), baseline), text)
+                if self._caret_on:
+                    cx = inner.left() + metrics.horizontalAdvance(text)
+                    painter.setPen(QPen(theme.CARET_COLOR, 1.6))
+                    painter.drawLine(QPointF(cx, box.top() + 3),
+                                     QPointF(cx, box.bottom() - 3))
+            else:
+                painter.setPen(QPen(QColor(90, 150, 235, 170), 1))
+                painter.setBrush(QColor(90, 150, 235, 38))
+                painter.drawRect(box)
+                if field.read_only:
+                    painter.setBrush(QColor(140, 140, 140, 30))
+                    painter.drawRect(box)
 
     def _paint_edit(self, painter: QPainter):
         editable = self.edit

@@ -24,6 +24,7 @@ pip install "pyinstaller>=6.3"
 
 python tests/test_document.py
 python tests/test_textengine.py
+python tests/test_features.py
 QT_QPA_PLATFORM=offscreen python tests/test_gui.py
 
 pyinstaller --noconfirm pdfstudio.spec
