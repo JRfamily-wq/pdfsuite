@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-                               QLabel, QLineEdit, QPlainTextEdit, QSlider,
-                               QSpinBox, QVBoxLayout)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                               QFormLayout, QFrame, QLabel, QLineEdit,
+                               QPlainTextEdit, QSlider, QSpinBox, QVBoxLayout)
 
+from .doc_features import COMPRESS_PRESETS
 from .document import PAGE_SIZES
 
 
@@ -261,3 +262,112 @@ class PageLabelDialog(QDialog):
 
     def values(self):
         return self.style.currentData(), self.prefix.text(), self.start.value()
+
+
+def human_size(n: int) -> str:
+    if n >= 1048576:
+        return f"{n / 1048576:.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n} bytes"
+
+
+class CompressDialog(QDialog):
+    """Reduce file size, with an honest up-front look at what is achievable."""
+
+    def __init__(self, parent, report: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Reduce file size")
+        self.report = report
+        self.setMinimumWidth(470)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        # ---- what this document is made of
+        current = human_size(report.get("total_bytes", 0))
+        count = report.get("count", 0)
+        share = report.get("share", 0.0)
+        max_dpi = report.get("max_dpi", 0.0)
+        if count and share > 0.2:
+            verdict = (f"This document is {current}, and about {share:.0%} of that is "
+                       f"{count} image{'s' if count != 1 else ''} at up to "
+                       f"{max_dpi:.0f} dpi. Resampling them is where the saving is.")
+        elif count:
+            verdict = (f"This document is {current} with {count} "
+                       f"image{'s' if count != 1 else ''}, but images are only "
+                       f"{share:.0%} of it, so expect a modest saving.")
+        else:
+            verdict = (f"This document is {current} and contains no images. It is "
+                       f"mostly text, so there is little to reclaim — the file is "
+                       f"probably already near its smallest.")
+        summary = QLabel(verdict)
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+
+        # ---- presets
+        layout.addWidget(QLabel("How much should quality be traded for size?"))
+        self.preset = QComboBox()
+        for key, label, _desc, _opts in COMPRESS_PRESETS:
+            self.preset.addItem(label, key)
+        self.preset.setCurrentIndex(2)          # balanced
+        layout.addWidget(self.preset)
+        self.desc = QLabel("")
+        self.desc.setWordWrap(True)
+        self.desc.setProperty("dim", "true")
+        layout.addWidget(self.desc)
+
+        # ---- fine control
+        form = QFormLayout()
+        self.dpi = QSpinBox()
+        self.dpi.setRange(0, 600)
+        self.dpi.setSingleStep(10)
+        self.dpi.setSuffix(" dpi")
+        self.dpi.setSpecialValueText("leave images alone")
+        self.quality = QSpinBox()
+        self.quality.setRange(1, 100)
+        self.quality.setSuffix(" %")
+        form.addRow("Resample images above:", self.dpi)
+        form.addRow("Image quality:", self.quality)
+        layout.addLayout(form)
+
+        self.grayscale = QCheckBox("Convert images to greyscale")
+        self.subset = QCheckBox("Subset embedded fonts (keeps only glyphs used)")
+        self.strip = QCheckBox("Remove metadata, thumbnails and JavaScript")
+        self.flatten = QCheckBox("Flatten annotations and form fields")
+        self.flatten.setToolTip("Bakes them into the page — they can no longer be edited")
+        for box in (self.grayscale, self.subset, self.strip, self.flatten):
+            layout.addWidget(box)
+
+        note = QLabel("Text, vector graphics and page layout are never altered. "
+                      "The change is applied to the open document so you can look "
+                      "at it, and Undo puts the originals back.")
+        note.setWordWrap(True)
+        note.setProperty("dim", "true")
+        layout.addWidget(note)
+        layout.addWidget(_buttons(self))
+
+        self.preset.currentIndexChanged.connect(self._apply_preset)
+        self._apply_preset()
+
+    def _apply_preset(self):
+        key = self.preset.currentData()
+        for pkey, _label, desc, opts in COMPRESS_PRESETS:
+            if pkey != key:
+                continue
+            self.desc.setText(desc)
+            self.dpi.setValue(int(opts.get("image_dpi", 0)))
+            self.quality.setValue(int(opts.get("quality", 75) or 75))
+            self.grayscale.setChecked(bool(opts.get("grayscale")))
+            self.subset.setChecked(bool(opts.get("subset_fonts", True)))
+            self.strip.setChecked(bool(opts.get("strip_metadata")))
+            return
+
+    def values(self) -> dict:
+        return {
+            "image_dpi": self.dpi.value(),
+            "quality": self.quality.value(),
+            "grayscale": self.grayscale.isChecked(),
+            "subset_fonts": self.subset.isChecked(),
+            "strip_metadata": self.strip.isChecked(),
+            "flatten_annotations": self.flatten.isChecked(),
+        }

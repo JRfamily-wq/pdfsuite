@@ -64,6 +64,18 @@ No installer, no Python, no account, no internet connection needed.
 - **Generate a contents list automatically** by finding the headings in a
   document that has none
 
+**Reducing file size**
+- **Reduce File Size** (Ctrl+Shift+C) analyses the document first and tells you
+  where its weight actually is before you commit to anything
+- Five presets from lossless reorganising up to 72 dpi greyscale, or set the
+  image resolution and JPEG quality yourself
+- Optional font subsetting, metadata stripping and annotation flattening
+- Text, vector graphics and layout are never touched — only images are resampled
+- The result is applied to the open document so you can inspect the quality, and
+  Undo puts the originals back. On an image-heavy file expect **90%+ smaller**
+- It will never hand you a *bigger* file: if there is nothing to reclaim it says
+  so and leaves the document alone
+
 **Pages and documents**
 - Rotate, delete, reorder (drag thumbnails), insert blank pages
 - Merge another PDF in, or extract pages out to a new file
@@ -133,6 +145,7 @@ python main.py [file.pdf]
 | Space+drag, or middle-drag | Pan |
 | Del | Delete the selected object |
 | Ctrl+M / Ctrl+P | Insert-merge a PDF / Print |
+| Ctrl+Shift+C | Reduce file size |
 | Ctrl+3 / Ctrl+4 / Ctrl+5 | Continuous / single page / two-page spread |
 | Ctrl+D | Night mode |
 | Tab | Next form field |
@@ -168,13 +181,14 @@ kind of app. No PDF-editing library is doing the work.
 python tests/test_document.py                        # document engine
 python tests/test_textengine.py                      # layout / caret / commit fidelity
 python tests/test_features.py                        # forms, bookmarks, links, split…
+python tests/test_compress.py                        # file-size reduction
 QT_QPA_PLATFORM=offscreen python tests/test_gui.py   # GUI with synthesized input
 ```
 
 The GUI test drives the real window with synthesized mouse and keyboard events:
 clicking into text, typing, dragging a text block, clicking a form field and
 filling it, ticking a checkbox, drawing and resizing shapes, switching view
-modes, taking a snapshot, and searching. All four suites run in CI on every
+modes, taking a snapshot, compressing a file, and searching. All five suites run in CI on every
 platform before the executable is built.
 
 ## Limitations worth knowing

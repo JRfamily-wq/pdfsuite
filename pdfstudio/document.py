@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import fitz  # PyMuPDF
 
-from .doc_features import DocumentFeatures
+from .doc_features import LOSSLESS_SAVE, DocumentFeatures
 from .fonts import FontResolver
 from .textengine import EditableText
 
@@ -106,9 +106,12 @@ class PdfDocument(DocumentFeatures):
         path = path or self.path
         if not path:
             raise PdfError("No file name given")
-        kwargs = {"garbage": 4 if optimize else 3, "deflate": True}
+        # The lossless flags cost nothing in quality and reliably produce a
+        # smaller file, so every save gets them rather than only "optimised"
+        # saves. `optimize` now only raises the effort spent squeezing streams.
+        kwargs = dict(LOSSLESS_SAVE)
         if optimize:
-            kwargs["clean"] = True
+            kwargs["compression_effort"] = 100
         if user_pw or owner_pw:
             kwargs.update(
                 encryption=fitz.PDF_ENCRYPT_AES_256,
@@ -177,6 +180,19 @@ class PdfDocument(DocumentFeatures):
             self.fonts.reset(self.doc)
         self.dirty = True
         self._notify(True)
+
+    def _rollback_snapshot(self) -> bool:
+        """Undo the most recent snapshot without leaving a redo step.
+
+        Used when an operation turns out not to be worth keeping — the history
+        should look as though it never happened, rather than offering to redo
+        something the user would not want.
+        """
+        if not self._undo:
+            return False
+        self._load_bytes(self._undo.pop())
+        self._redo.clear()
+        return True
 
     def _done(self, structural: bool):
         self.dirty = True

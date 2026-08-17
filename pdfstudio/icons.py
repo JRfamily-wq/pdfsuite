@@ -337,6 +337,18 @@ def icon(name: str) -> QIcon:
         p.setPen(_pen(ACCENT, 1.7))
         p.drawLine(QPointF(6.5, 15.3), QPointF(11, 15.3))
 
+    elif name == "compress":
+        p.setPen(_pen(width=1.6))
+        p.drawRect(QRectF(6, 3.5, 10, 4))
+        p.drawRect(QRectF(6, 14.5, 10, 4))
+        p.setPen(_pen(ACCENT, 1.8))
+        p.drawLine(QPointF(11, 8.5), QPointF(11, 11))
+        _arrow_head(p, QPointF(11, 11.6), math.pi / 2, 4.5)
+        p.drawLine(QPointF(11, 13.5), QPointF(11, 11.9))
+        p.setPen(_pen(QColor("#8b93a1"), 1.2))
+        p.drawLine(QPointF(4, 11), QPointF(8, 11))
+        p.drawLine(QPointF(14, 11), QPointF(18, 11))
+
     elif name == "attach":
         p.setPen(_pen(width=1.7))
         path = QPainterPath(QPointF(14.5, 6))

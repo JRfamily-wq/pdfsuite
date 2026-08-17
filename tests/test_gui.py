@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 from pdfstudio import theme
 from pdfstudio.canvas import Tool
 from pdfstudio.main_window import MainWindow
+from test_compress import build_heavy, make_photo
 from test_features import build_form
 from test_textengine import TMP, build
 
@@ -342,6 +343,38 @@ def main():
                       for i in range(win2.forms.list.count()))
     assert "Grace" in listed, listed
     print("form panel reflects canvas edits: ok")
+
+    # ------------------------------------------------------------- compress
+    from pdfstudio.dialogs import CompressDialog, human_size
+    assert human_size(2500000).endswith("MB") and human_size(2048) == "2 KB"
+    photo = make_photo(os.path.join(TMP, "gui-photo.png"), 900, 650)
+    heavy = build_heavy(os.path.join(TMP, "gui-heavy.pdf"), photo, pages=2)
+    win3 = MainWindow()
+    win3.resize(1200, 800)
+    win3.show()
+    win3.open_path(heavy)
+    pump(300)
+    rep = win3.doc.image_report()
+    assert rep["count"] >= 1 and rep["share"] > 0.4, rep
+    dlg = CompressDialog(win3, rep)
+    assert dlg.preset.currentData() == "balanced"
+    opts = dlg.values()
+    before = win3.doc.measure_size()
+    result = win3.doc.compress(**opts)
+    pump(200)
+    assert result["after"] < before, result
+    assert result["ratio"] > 0.3, result
+    # the canvas must still render the compressed pages
+    win3.canvas.invalidate_cache()
+    pump(200)
+    assert win3.canvas.pixmap_for(0) is not None, "compressed page failed to render"
+    assert "Section 1" in win3.doc.page_text(0), "compression damaged the text"
+    print(f"compress via UI: {human_size(before)} -> {human_size(result['after'])}"
+          f" ({result['ratio']:.0%} smaller), page still renders: ok")
+    win3.doc.undo()
+    pump(200)
+    assert win3.doc.measure_size() > result["after"] * 2, "undo did not restore"
+    print("undo after compress restores the original: ok")
 
     if shot:
         win.set_tool(Tool.EDIT_TEXT)

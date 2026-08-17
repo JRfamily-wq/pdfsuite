@@ -12,6 +12,42 @@ import os
 
 import fitz
 
+# Lossless save flags. These only reorganise the file — object streams, deflated
+# image and font streams, dropped unreachable objects — so they are always safe
+# and are used for every save, not just an explicit "compress".
+LOSSLESS_SAVE = dict(garbage=4, deflate=True, deflate_images=True,
+                     deflate_fonts=True, clean=True, use_objstms=1)
+
+# Compression presets. image_dpi = 0 means leave images untouched.
+#
+# The numbers come from measuring a real image-heavy document: structural
+# tidying alone recovers ~12%, while resampling images recovers 90%+. Images
+# are where PDF weight actually lives, so that is the knob that matters.
+COMPRESS_PRESETS = [
+    ("lossless", "Lossless — reorganise only",
+     "No quality loss at all. Rebuilds the file, drops unused objects and "
+     "compresses streams. Modest saving on most files.",
+     dict(image_dpi=0, quality=0, grayscale=False, subset_fonts=True,
+          strip_metadata=False)),
+    ("print", "Print quality — 200 dpi images",
+     "Safe for printing. Only images above 200 dpi are resampled.",
+     dict(image_dpi=200, quality=85, grayscale=False, subset_fonts=True,
+          strip_metadata=False)),
+    ("balanced", "Balanced — 150 dpi images (recommended)",
+     "Good on screen and acceptable in print. The usual choice for email.",
+     dict(image_dpi=150, quality=75, grayscale=False, subset_fonts=True,
+          strip_metadata=False)),
+    ("screen", "Screen — 110 dpi images",
+     "For reading on screen. Photos soften slightly.",
+     dict(image_dpi=110, quality=65, grayscale=False, subset_fonts=True,
+          strip_metadata=True)),
+    ("smallest", "Smallest — 72 dpi, greyscale",
+     "Smallest possible file. Images become grey and visibly soft — good for "
+     "a text-focused archive copy.",
+     dict(image_dpi=72, quality=45, grayscale=True, subset_fonts=True,
+          strip_metadata=True)),
+]
+
 STAMP_PRESETS = {
     "APPROVED": (0.10, 0.55, 0.20),
     "REJECTED": (0.80, 0.13, 0.16),
@@ -592,6 +628,145 @@ class DocumentFeatures:
                     continue
         self._done(False)
         return flattened
+
+    # --------------------------------------------------------- compression
+
+    def measure_size(self) -> int:
+        """Bytes this document would occupy if saved now."""
+        try:
+            return len(self.doc.tobytes(**LOSSLESS_SAVE))
+        except Exception:
+            try:
+                return len(self.doc.tobytes())
+            except Exception:
+                return 0
+
+    def image_report(self) -> dict:
+        """What images the document holds, and how heavy they are.
+
+        Used to tell the user in advance whether compressing will achieve
+        anything — on a text-only file it will not, and saying so up front is
+        better than an unexplained 2% result.
+        """
+        seen: dict[int, dict] = {}
+        for pno in range(self.page_count):
+            try:
+                page = self.doc[pno]
+                images = page.get_images(full=True)
+            except Exception:
+                continue
+            for entry in images:
+                xref = entry[0]
+                if xref in seen:
+                    continue
+                width, height = entry[2], entry[3]
+                try:
+                    info = self.doc.extract_image(xref)
+                    nbytes = len(info.get("image", b"") or b"")
+                except Exception:
+                    nbytes = 0
+                # Effective resolution: pixels spread over the drawn size.
+                dpi = 0.0
+                try:
+                    for rect in page.get_image_rects(xref):
+                        if rect.width > 1:
+                            dpi = max(dpi, width * 72.0 / rect.width)
+                except Exception:
+                    pass
+                seen[xref] = {"xref": xref, "width": width, "height": height,
+                              "bytes": nbytes, "dpi": dpi}
+        images = list(seen.values())
+        total = self.measure_size()
+        image_bytes = sum(i["bytes"] for i in images)
+        return {
+            "count": len(images),
+            "image_bytes": image_bytes,
+            "total_bytes": total,
+            "share": (image_bytes / total) if total else 0.0,
+            "max_dpi": max((i["dpi"] for i in images), default=0.0),
+            "images": images,
+        }
+
+    def compress(self, image_dpi: int = 150, quality: int = 75,
+                 grayscale: bool = False, subset_fonts: bool = True,
+                 strip_metadata: bool = False,
+                 flatten_annotations: bool = False) -> dict:
+        """Shrink the document in place. Undoable, so a lossy result can be
+        reverted after the user has looked at it.
+
+        Returns before/after byte counts and what was actually done.
+        """
+        before = self.measure_size()
+        report = self.image_report()
+        self._snapshot()
+        did = {"images": False, "fonts": 0, "scrubbed": False, "baked": False,
+               "image_count": report["count"]}
+
+        if flatten_annotations:
+            try:
+                self.doc.bake(annots=True, widgets=True)
+                did["baked"] = True
+            except Exception:
+                pass
+
+        # Resampling a document with no images cannot help and measurably
+        # inflates it, so don't bother asking.
+        if image_dpi and image_dpi > 0 and report["count"]:
+            try:
+                # dpi_target must be strictly below dpi_threshold, so the
+                # threshold sits just above the target: anything sharper than
+                # the target gets resampled down to it.
+                self.doc.rewrite_images(dpi_threshold=int(image_dpi) + 1,
+                                        dpi_target=int(image_dpi),
+                                        quality=max(1, min(int(quality), 100)),
+                                        set_to_gray=bool(grayscale))
+                did["images"] = True
+            except Exception as exc:
+                did["image_error"] = str(exc)
+
+        if subset_fonts:
+            try:
+                dropped = self.doc.subset_fonts()
+                did["fonts"] = int(dropped or 0)
+            except Exception:
+                pass
+
+        if strip_metadata:
+            try:
+                # Keep links and form values — the user asked to slim the file,
+                # not to break its navigation or throw away filled answers.
+                self.doc.scrub(attached_files=False, embedded_files=False,
+                               remove_links=False, reset_fields=False,
+                               reset_responses=False, redactions=False,
+                               metadata=True, xml_metadata=True,
+                               thumbnails=True, javascript=True,
+                               hidden_text=False, clean_pages=False)
+                did["scrubbed"] = True
+            except Exception:
+                pass
+
+        after = self.measure_size()
+
+        # A compressor must never hand back a bigger file. Some documents are
+        # already as tight as they get, and rebuilding them costs a few bytes;
+        # in that case put the original back and say so plainly.
+        if before and after >= before:
+            self._rollback_snapshot()
+            return {"before": before, "after": before, "saved": 0,
+                    "ratio": 0.0, "no_gain": True, "did": did}
+
+        self._done(True)
+        return {"before": before, "after": after,
+                "saved": max(0, before - after),
+                "ratio": (1 - after / before) if before else 0.0,
+                "no_gain": False, "did": did}
+
+    @staticmethod
+    def preset(name: str) -> dict:
+        for key, _label, _desc, opts in COMPRESS_PRESETS:
+            if key == name:
+                return dict(opts)
+        return dict(COMPRESS_PRESETS[2][3])
 
     # -------------------------------------------------------- page labels
 

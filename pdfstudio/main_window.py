@@ -14,9 +14,10 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QComboBox, QDialog,
 
 from . import APP_NAME, __version__, icons, theme
 from .canvas import HINTS, PageCanvas, Tool, ViewMode
-from .dialogs import (NewDocumentDialog, PageLabelDialog, PageNumbersDialog,
-                      PasswordDialog, PropertiesDialog, SplitDialog,
-                      TextEntryDialog, WatermarkDialog)
+from .dialogs import (CompressDialog, NewDocumentDialog, PageLabelDialog,
+                      PageNumbersDialog, PasswordDialog, PropertiesDialog,
+                      SplitDialog, TextEntryDialog, WatermarkDialog,
+                      human_size)
 from .document import BLACK, WHITE, PdfDocument, PdfError
 from .doc_features import STAMP_PRESETS
 from .panels import InspectorPanel, SearchPanel, ThumbnailPanel
@@ -191,6 +192,8 @@ class MainWindow(QMainWindow):
         self.act_form_reset = A("&Reset Form", self.action_form_reset)
         self.act_form_flatten = A("Flatten &Form", self.action_form_flatten)
         self.act_snapshot_save = A("Save Snapshot to &File…", self.action_snapshot_file)
+        self.act_compress = A("&Reduce File Size…", self.action_compress, "Ctrl+Shift+C",
+                              "compress")
 
         self.act_about = A("&About", self.action_about)
         self.act_shortcuts = A("&Keyboard Shortcuts", self.action_shortcuts, "F1")
@@ -220,6 +223,8 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         for a in (self.act_save, self.act_save_as, self.act_save_pw, self.act_save_opt):
             m.addAction(a)
+        m.addSeparator()
+        m.addAction(self.act_compress)
         m.addSeparator()
         for a in (self.act_merge, self.act_extract, self.act_export_png, self.act_export_text):
             m.addAction(a)
@@ -446,6 +451,7 @@ class MainWindow(QMainWindow):
         for action in (self.act_save, self.act_save_as, self.act_save_pw,
                        self.act_save_opt, self.act_merge, self.act_extract,
                        self.act_export_png, self.act_export_text, self.act_props,
+                       self.act_compress,
                        self.act_print, self.act_copy, self.act_select_all,
                        self.act_find, self.act_rot_left, self.act_rot_right,
                        self.act_move_up, self.act_move_down, self.act_insert_blank,
@@ -1199,6 +1205,74 @@ class MainWindow(QMainWindow):
             self.forms._flatten()
         else:
             self.statusBar().showMessage("This document has no form fields", 3000)
+
+    def action_compress(self):
+        """Reduce the file size, then show what it actually achieved."""
+        if not self.doc.is_open():
+            return
+        self.canvas.commit_edit()
+        self.canvas.commit_field()
+        report = self.doc.image_report()
+        dialog = CompressDialog(self, report)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.statusBar().showMessage("Compressing…")
+        try:
+            result = self.doc.compress(**dialog.values())
+        except Exception as exc:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, APP_NAME, f"Compression failed: {exc}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        self.canvas.invalidate_cache()
+        self.thumbs.populate()
+
+        if result.get("no_gain"):
+            QMessageBox.information(
+                self, "Nothing to reclaim",
+                f"This file is already about as small as it gets "
+                f"({human_size(result['before'])}), so it has been left alone.\n\n"
+                + ("It contains no images, and text and vector graphics are already "
+                   "compressed." if not result["did"].get("image_count")
+                   else "Its images are already at or below the resolution you chose."))
+            self.statusBar().showMessage("No saving available — document unchanged", 6000)
+            return
+
+        before, after = result["before"], result["after"]
+        detail = []
+        if result["did"].get("images"):
+            detail.append(f"resampled {result['did'].get('image_count', 0)} image(s)")
+        if result["did"].get("fonts"):
+            detail.append(f"subset {result['did']['fonts']} font(s)")
+        if result["did"].get("scrubbed"):
+            detail.append("removed metadata and thumbnails")
+        if result["did"].get("baked"):
+            detail.append("flattened annotations")
+
+        box = QMessageBox(self)
+        box.setWindowTitle("File size reduced")
+        box.setIcon(QMessageBox.Information)
+        box.setText(f"<b>{human_size(before)} → {human_size(after)}</b><br>"
+                    f"{result['ratio']:.0%} smaller "
+                    f"({human_size(result['saved'])} saved)")
+        box.setInformativeText(
+            ("This " + ", ".join(detail) + ".\n\n" if detail else "")
+            + "Look over the pages — if the quality is not good enough, choose "
+              "Undo. Save the document to write the smaller file to disk.")
+        keep = box.addButton("Keep", QMessageBox.AcceptRole)
+        box.addButton("Undo", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not keep:
+            self.doc.undo()
+            self.canvas.invalidate_cache()
+            self.statusBar().showMessage("Compression undone", 4000)
+        else:
+            self.statusBar().showMessage(
+                f"{result['ratio']:.0%} smaller — save the document to keep it", 8000)
 
     def action_snapshot_file(self):
         image = QApplication.clipboard().image()
