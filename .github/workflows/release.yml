@@ -74,11 +74,10 @@ jobs:
           python tests/test_packaging.py
           python tests/test_gui.py
 
-      - name: Generate icon assets
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python tools/make_icon.py
-
+      # The committed assets/ icons are used as-is: regenerating per-OS would
+      # give each platform a marginally different render (font fallback moves
+      # the pixels), while the committed files are pixel-identical everywhere.
+      # Update them deliberately with `python tools/make_icon.py`.
       - name: Build executable
         run: pyinstaller --noconfirm pdfstudio.spec
 

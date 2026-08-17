@@ -24,7 +24,7 @@ set QT_QPA_PLATFORM=offscreen
 python tests\test_gui.py || goto :error
 set QT_QPA_PLATFORM=
 
-python tools\make_icon.py || goto :error
+if not exist assets\app.ico python tools\make_icon.py
 pyinstaller --noconfirm pdfstudio.spec || goto :error
 
 echo.
