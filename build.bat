@@ -19,10 +19,12 @@ python tests\test_document.py || goto :error
 python tests\test_textengine.py || goto :error
 python tests\test_features.py || goto :error
 python tests\test_compress.py || goto :error
+python tests\test_packaging.py || goto :error
 set QT_QPA_PLATFORM=offscreen
 python tests\test_gui.py || goto :error
 set QT_QPA_PLATFORM=
 
+python tools\make_icon.py || goto :error
 pyinstaller --noconfirm pdfstudio.spec || goto :error
 
 echo.

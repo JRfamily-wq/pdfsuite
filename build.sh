@@ -26,8 +26,10 @@ python tests/test_document.py
 python tests/test_textengine.py
 python tests/test_features.py
 python tests/test_compress.py
+QT_QPA_PLATFORM=offscreen python tests/test_packaging.py
 QT_QPA_PLATFORM=offscreen python tests/test_gui.py
 
+QT_QPA_PLATFORM=offscreen python tools/make_icon.py
 pyinstaller --noconfirm pdfstudio.spec
 
 echo

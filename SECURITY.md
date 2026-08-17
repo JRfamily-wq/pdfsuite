@@ -98,9 +98,39 @@ dependencies" sounds. Keep the pinned MuPDF version current — that is what the
 
 Residual items a reviewer should weigh:
 
-- **The executable is unsigned.** Windows SmartScreen warns on first run. For
-  fleet deployment, sign it with your organisation's code-signing certificate,
-  or distribute it through your software portal.
+- **Code signing.** The release pipeline signs builds automatically when
+  certificate secrets are configured in the repository; without them the
+  executable ships unsigned and SmartScreen warns on first run. To enable
+  signing, add repository secrets and cut a release — no workflow changes
+  needed:
+
+  | Secret | Contents |
+  |---|---|
+  | `WIN_SIGN_CERT_B64` | The Windows .pfx certificate, base64-encoded |
+  | `WIN_SIGN_CERT_PASSWORD` | Its password |
+  | `MAC_SIGN_CERT_B64` | The Apple Developer ID .p12, base64-encoded |
+  | `MAC_SIGN_CERT_PASSWORD` | Its password |
+  | `MAC_SIGN_IDENTITY` | e.g. `Developer ID Application: Your Name (TEAMID)` |
+
+  Windows signing uses signtool with SHA-256 and an RFC 3161 timestamp, so
+  signatures outlive the certificate. macOS signing runs codesign with the
+  hardened runtime; notarization (`xcrun notarytool submit … --wait`, then
+  `xcrun stapler staple`) additionally needs an App Store Connect API key and
+  is left as a documented manual step.
+
+  Where to get a certificate: an internal PKI certificate pushed to the trust
+  store by Group Policy is the zero-cost route for company-internal
+  deployment; Azure Trusted Signing (about $10/month) is the cheapest public
+  route on Windows; a standard OV certificate (~$70–300/yr) signs but earns
+  SmartScreen reputation gradually; an EV certificate or the Apple Developer
+  Program ($99/yr for macOS) removes warnings immediately. A self-signed
+  certificate does **not** help outside your own machines — Windows treats
+  unknown publishers the same as no signature.
+
+  Even unsigned, the executable now carries an embedded icon and a version
+  information resource (publisher, product, version), so it presents proper
+  metadata in Explorer and to reputation heuristics rather than appearing as
+  an anonymous binary.
 - **PyMuPDF is AGPL-3.0.** Internal use inside a company is fine. If you
   distribute the application outside the organisation, the AGPL's source
   availability obligations apply. If that is a problem, the PDF engine would

@@ -427,30 +427,36 @@ def color_swatch(color, size: int = SIZE) -> QIcon:
     return QIcon(pix)
 
 
+def app_icon_pixmap(size: int) -> QPixmap:
+    """The application mark at any size — one painter feeds the runtime window
+    icon, the Windows .ico and the macOS .icns, so they can never drift."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+    margin = size * 0.07
+    rect = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#c8323c"))
+    p.drawRoundedRect(rect, size * 0.19, size * 0.19)
+    # folded corner
+    fold = QPolygonF([QPointF(rect.right() - size * 0.3, rect.top()),
+                      QPointF(rect.right(), rect.top() + size * 0.3),
+                      QPointF(rect.right(), rect.top())])
+    p.setBrush(QColor(0, 0, 0, 45))
+    p.drawPolygon(fold)
+    font = QFont("DejaVu Sans")
+    font.setPixelSize(max(6, int(size * 0.33)))
+    font.setBold(True)
+    p.setFont(font)
+    p.setPen(QColor("#ffffff"))
+    p.drawText(rect.adjusted(0, size * 0.05, 0, 0), Qt.AlignCenter, "PDF")
+    p.end()
+    return pix
+
+
 def app_icon() -> QIcon:
     result = QIcon()
     for size in (16, 24, 32, 48, 64, 128, 256):
-        pix = QPixmap(size, size)
-        pix.fill(Qt.transparent)
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.Antialiasing)
-        margin = size * 0.07
-        rect = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#c8323c"))
-        p.drawRoundedRect(rect, size * 0.19, size * 0.19)
-        # folded corner
-        fold = QPolygonF([QPointF(rect.right() - size * 0.3, rect.top()),
-                          QPointF(rect.right(), rect.top() + size * 0.3),
-                          QPointF(rect.right(), rect.top())])
-        p.setBrush(QColor(0, 0, 0, 45))
-        p.drawPolygon(fold)
-        font = QFont("DejaVu Sans")
-        font.setPixelSize(max(6, int(size * 0.33)))
-        font.setBold(True)
-        p.setFont(font)
-        p.setPen(QColor("#ffffff"))
-        p.drawText(rect.adjusted(0, size * 0.05, 0, 0), Qt.AlignCenter, "PDF")
-        p.end()
-        result.addPixmap(pix)
+        result.addPixmap(app_icon_pixmap(size))
     return result

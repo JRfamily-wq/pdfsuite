@@ -117,7 +117,11 @@ and download the zip for your platform. No GitHub account needed.
 Each release ships `SHA256SUMS.txt` so you can verify a download against what
 CI produced.
 
-The app is not code-signed, so the first launch needs one extra click:
+On macOS you get a double-clickable **PDFStudio.app** with the proper icon;
+on Windows the .exe carries the app icon and full version metadata.
+
+Unless a signing certificate has been configured for the releases (see
+SECURITY.md), the first launch needs one extra click:
 **Windows** — SmartScreen warns, choose *More info → Run anyway*.
 **macOS** — right-click the app, choose *Open*, then confirm.
 
@@ -177,6 +181,7 @@ The parts that make a PDF editor an *editor* are written from scratch here:
 | `doc_features.py` | Forms, bookmarks, links, attachments, stamps, page surgery |
 | `panels.py` / `theme.py` / `icons.py` | Sidebar, inspector, dark theme, runtime-drawn icons |
 | `titlebar.py` | Frameless window chrome: title bar, window buttons, drag and edge-resize |
+| `tools/make_icon.py` | Renders the app icon into .ico / .icns / .png with hand-written containers |
 
 Editing text works by rebuilding the structure a PDF throws away. Characters
 are extracted with their individual bounding boxes and styles, laid out again
@@ -196,13 +201,14 @@ python tests/test_document.py                        # document engine
 python tests/test_textengine.py                      # layout / caret / commit fidelity
 python tests/test_features.py                        # forms, bookmarks, links, split…
 python tests/test_compress.py                        # file-size reduction
+python tests/test_packaging.py                       # icon containers, spec, signing hooks
 QT_QPA_PLATFORM=offscreen python tests/test_gui.py   # GUI with synthesized input
 ```
 
 The GUI test drives the real window with synthesized mouse and keyboard events:
 clicking into text, typing, dragging a text block, clicking a form field and
 filling it, ticking a checkbox, drawing and resizing shapes, switching view
-modes, taking a snapshot, compressing a file, and searching. All five suites run in CI on every
+modes, taking a snapshot, compressing a file, and searching. All six suites run in CI on every
 platform before the executable is built.
 
 ## Limitations worth knowing

@@ -54,10 +54,20 @@ jobs:
       - name: Run compression tests
         run: python tests/test_compress.py
 
+      - name: Run packaging tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tests/test_packaging.py
+
       - name: Run GUI tests
         env:
           QT_QPA_PLATFORM: offscreen
         run: python tests/test_gui.py
+
+      - name: Generate icon assets
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tools/make_icon.py
 
       - name: Build executable
         run: pyinstaller --noconfirm pdfstudio.spec

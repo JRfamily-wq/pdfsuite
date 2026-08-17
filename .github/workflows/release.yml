@@ -23,6 +23,15 @@ jobs:
   build:
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    env:
+      # Optional code-signing material. When these secrets are absent the
+      # signing steps are skipped and the release ships unsigned, exactly as
+      # before — adding the secrets is all it takes to ship signed builds.
+      WIN_SIGN_CERT_B64: ${{ secrets.WIN_SIGN_CERT_B64 }}
+      WIN_SIGN_CERT_PASSWORD: ${{ secrets.WIN_SIGN_CERT_PASSWORD }}
+      MAC_SIGN_CERT_B64: ${{ secrets.MAC_SIGN_CERT_B64 }}
+      MAC_SIGN_CERT_PASSWORD: ${{ secrets.MAC_SIGN_CERT_PASSWORD }}
+      MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
     strategy:
       fail-fast: true
       matrix:
@@ -62,10 +71,54 @@ jobs:
           python tests/test_textengine.py
           python tests/test_features.py
           python tests/test_compress.py
+          python tests/test_packaging.py
           python tests/test_gui.py
+
+      - name: Generate icon assets
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tools/make_icon.py
 
       - name: Build executable
         run: pyinstaller --noconfirm pdfstudio.spec
+
+      - name: Sign the Windows executable (runs only when a certificate is configured)
+        if: runner.os == 'Windows' && env.WIN_SIGN_CERT_B64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WIN_SIGN_CERT_B64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" `
+            -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\" } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found on the runner" }
+          & $signtool.FullName sign /f $pfx /p $env:WIN_SIGN_CERT_PASSWORD `
+            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            /d "PDF Studio" dist\PDFStudio.exe
+          & $signtool.FullName verify /pa dist\PDFStudio.exe
+          Remove-Item $pfx
+
+      - name: Sign the macOS app (runs only when a certificate is configured)
+        if: runner.os == 'macOS' && env.MAC_SIGN_CERT_B64 != ''
+        run: |
+          P12="$RUNNER_TEMP/signing.p12"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo "$MAC_SIGN_CERT_B64" | base64 --decode > "$P12"
+          security create-keychain -p tempkeychain "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p tempkeychain "$KEYCHAIN"
+          security import "$P12" -k "$KEYCHAIN" -P "$MAC_SIGN_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k tempkeychain "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$MAC_SIGN_IDENTITY" dist/PDFStudio.app
+          codesign --verify --deep --verbose=2 dist/PDFStudio.app
+          rm -f "$P12"
+          # Notarization (xcrun notarytool) still needs an App Store Connect
+          # API key and is documented in SECURITY.md as a manual follow-up.
 
       # Zipped with Python so the same step works on all three runners without
       # depending on zip/7z/Compress-Archive being present.
@@ -75,7 +128,20 @@ jobs:
           LABEL: ${{ matrix.label }}
           REF_NAME: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          python - <<'PY'
+          OUT="PDFStudio-$REF_NAME-$LABEL.zip"
+          if [ "$LABEL" = "macOS" ]; then
+            # Ship the double-clickable .app. zip -ry keeps symlinks and the
+            # executable bits — Python's zipfile would strip the bundle's
+            # structure and macOS would refuse to launch it.
+            test -d dist/PDFStudio.app
+            STAGE="$(mktemp -d)"
+            cp -R dist/PDFStudio.app "$STAGE/"
+            cp README.md LICENSE "$STAGE/"
+            (cd "$STAGE" && zip -qry "$OLDPWD/$OUT" .)
+            rm -rf "$STAGE"
+            shasum -a 256 "$OUT" | tee "$OUT.sha256"
+          else
+            python - <<'PY'
           import hashlib, os, pathlib, zipfile
           label, tag = os.environ["LABEL"], os.environ["REF_NAME"]
           dist = pathlib.Path("dist")
@@ -91,6 +157,7 @@ jobs:
           pathlib.Path(f"{out.name}.sha256").write_text(f"{digest}  {out.name}\n")
           print(f"{out.name}  {out.stat().st_size/1_048_576:.1f} MB  sha256={digest}")
           PY
+          fi
 
       - name: Upload for the release job
         uses: actions/upload-artifact@v4
@@ -143,11 +210,11 @@ jobs:
           | macOS | `PDFStudio-…-macOS.zip` | `PDFStudio` |
           | Linux | `PDFStudio-…-Linux.zip` | `PDFStudio` |
 
-          **Windows** shows a SmartScreen warning the first time because the app
-          is not code-signed: choose **More info → Run anyway**.
-
-          **macOS** may refuse to open an unsigned app: right-click it, choose
-          **Open**, then confirm.
+          If this build is unsigned, **Windows** shows a SmartScreen warning on
+          first run — choose **More info → Run anyway** — and **macOS** may
+          refuse to open the app until you right-click it, choose **Open**, and
+          confirm. (Builds are signed automatically when a code-signing
+          certificate is configured in the repository.)
 
           `SHA256SUMS.txt` lets you verify a download matches what this build
           produced.
