@@ -5,12 +5,13 @@ from __future__ import annotations
 import os
 
 import fitz
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QImage, QKeySequence
 from PySide6.QtWidgets import (QApplication, QColorDialog, QComboBox, QDialog,
                                QDockWidget, QFileDialog, QInputDialog, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QScrollArea,
-                               QSpinBox, QTabWidget, QToolBar, QWidget)
+                               QLineEdit, QMainWindow, QMenuBar, QMessageBox,
+                               QScrollArea, QSpinBox, QTabWidget, QToolBar,
+                               QWidget)
 
 from . import APP_NAME, __version__, icons, theme
 from .canvas import HINTS, PageCanvas, Tool, ViewMode
@@ -23,6 +24,7 @@ from .doc_features import STAMP_PRESETS
 from .panels import InspectorPanel, SearchPanel, ThumbnailPanel
 from .panels2 import (AttachmentsPanel, BookmarksPanel, CommentsPanel,
                       FormPanel)
+from .titlebar import TitleBar, install_grips, position_grips, use_custom_frame
 
 PDF_FILTER = "PDF files (*.pdf)"
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp)"
@@ -76,6 +78,7 @@ class MainWindow(QMainWindow):
         self._build_canvas()
         self._build_actions()
         self._build_menus()
+        self._build_frame()
         self._build_toolbars()
         self._build_docks()
         self._build_statusbar()
@@ -160,6 +163,7 @@ class MainWindow(QMainWindow):
         self.act_next = A("&Next Page", lambda: self.goto_page(self.canvas.current_page + 1), "PgDown")
         self.act_first = A("&First Page", lambda: self.goto_page(0), "Ctrl+Home")
         self.act_last = A("&Last Page", lambda: self.goto_page(self.doc.page_count - 1), "Ctrl+End")
+        self.act_fullscreen = A("F&ull Screen", self.action_fullscreen, "F11")
         self.act_toggle_side = A("Toggle &Sidebar", self.toggle_sidebar, "F9", "sidebar")
         self.act_toggle_inspect = A("Toggle &Inspector", self.toggle_inspector, "F10")
 
@@ -214,7 +218,10 @@ class MainWindow(QMainWindow):
         self.tool_actions[Tool.SELECT].setChecked(True)
 
     def _build_menus(self):
-        bar = self.menuBar()
+        # Built as a standalone widget so the custom title bar can adopt it;
+        # with the native frame it is installed as the ordinary menu bar.
+        self.menu_bar = QMenuBar()
+        bar = self.menu_bar
         m = bar.addMenu("&File")
         m.addAction(self.act_new)
         m.addAction(self.act_open)
@@ -290,12 +297,30 @@ class MainWindow(QMainWindow):
         for a in (self.act_prev, self.act_next, self.act_first, self.act_last):
             m.addAction(a)
         m.addSeparator()
+        m.addAction(self.act_fullscreen)
         m.addAction(self.act_toggle_side)
         m.addAction(self.act_toggle_inspect)
 
         m = bar.addMenu("&Help")
         m.addAction(self.act_shortcuts)
         m.addAction(self.act_about)
+
+    def _build_frame(self):
+        """Install either the custom frameless chrome or the native frame."""
+        self.use_custom_frame = use_custom_frame()
+        if not self.use_custom_frame:
+            self.title_bar = None
+            self.grips = []
+            self.setMenuBar(self.menu_bar)
+            return
+        self.setObjectName("appWindow")
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint
+                            | Qt.WindowSystemMenuHint | Qt.WindowMinimizeButtonHint
+                            | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+        self.title_bar = TitleBar(self, self.menu_bar)
+        self.setMenuWidget(self.title_bar)
+        self.grips = install_grips(self)
+        self.title_bar.refresh_title()
 
     def _build_toolbars(self):
         tb = QToolBar("Main")
@@ -483,6 +508,8 @@ class MainWindow(QMainWindow):
         name = os.path.basename(self.doc.path) if self.doc.path else ("Untitled" if open_ else "")
         self.setWindowTitle(f"{name}[*] — {APP_NAME}" if name else APP_NAME)
         self.setWindowModified(self.doc.dirty)
+        if self.title_bar is not None:
+            self.title_bar.refresh_title()
         self._refresh_inspector()
 
     def _refresh_inspector(self):
@@ -549,12 +576,41 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self.grips:
+            position_grips(self, self.grips)
         if self.doc.is_open() and self.canvas.fit_mode:
             self._resize_timer.start()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.grips:
+            position_grips(self, self.grips)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() != QEvent.WindowStateChange:
+            return
+        maxed = self.isMaximized() or self.isFullScreen()
+        if self.title_bar is not None:
+            self.title_bar.sync_max()
+        for grip in self.grips:
+            grip.setVisible(not maxed)
+        if getattr(self, "use_custom_frame", False):
+            # the 1px window border disappears while maximised, like a native frame
+            self.setProperty("maxed", "true" if maxed else "false")
+            self.style().unpolish(self)
+            self.style().polish(self)
 
     def _refit(self):
         if self.canvas.fit_mode:
             self.canvas.set_zoom(self.canvas.zoom, fit_mode=self.canvas.fit_mode)
+
+    def action_fullscreen(self):
+        if self.isFullScreen():
+            self.showMaximized() if getattr(self, "_was_maximized", False) else self.showNormal()
+        else:
+            self._was_maximized = self.isMaximized()
+            self.showFullScreen()
 
     def toggle_sidebar(self):
         self.side_dock.setVisible(not self.side_dock.isVisible())

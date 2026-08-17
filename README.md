@@ -52,6 +52,18 @@ No installer, no Python, no account, no internet connection needed.
   content and fills it black
 - Undo/redo across every operation
 
+**A window that looks the part**
+- Custom-drawn window chrome: the menus live in the title bar beside the app
+  icon, with hand-drawn minimise / maximise / close buttons — no stock OS frame
+- Everything a native frame does still works: drag the bar (or empty menu
+  space) to move, drag any edge or corner to resize, double-click to maximise,
+  right-click for the window menu; dragging a maximised window restores it
+  under the cursor
+- The title shows the open document with a ● when there are unsaved changes
+- F11 full screen. On macOS the native frame is kept (that platform's
+  conventions); set `PDFSTUDIO_NATIVE_FRAME=1` to force the native frame
+  anywhere
+
 **Reading and navigation**
 - Three view modes: continuous scroll, one page at a time, or a two-page spread
 - **Night mode** inverts the page for reading in the dark
@@ -149,6 +161,7 @@ python main.py [file.pdf]
 | Ctrl+3 / Ctrl+4 / Ctrl+5 | Continuous / single page / two-page spread |
 | Ctrl+D | Night mode |
 | Tab | Next form field |
+| F11 | Full screen |
 | F9 / F10 | Toggle sidebar / properties panel |
 
 ## How it works
@@ -163,6 +176,7 @@ The parts that make a PDF editor an *editor* are written from scratch here:
 | `document.py` | Document model, undo/redo, and the commit path back into the PDF |
 | `doc_features.py` | Forms, bookmarks, links, attachments, stamps, page surgery |
 | `panels.py` / `theme.py` / `icons.py` | Sidebar, inspector, dark theme, runtime-drawn icons |
+| `titlebar.py` | Frameless window chrome: title bar, window buttons, drag and edge-resize |
 
 Editing text works by rebuilding the structure a PDF throws away. Characters
 are extracted with their individual bounding boxes and styles, laid out again

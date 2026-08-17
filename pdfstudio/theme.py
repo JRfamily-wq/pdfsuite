@@ -12,6 +12,7 @@ BG_HOVER = "#333944"
 BG_ACTIVE = "#3d4552"
 BORDER = "#383e47"
 CANVAS = "#15171b"           # area behind the pages
+TITLEBAR = "#14161a"         # custom window chrome
 TEXT = "#e4e7ec"
 TEXT_DIM = "#9aa3b0"
 ACCENT = "#4c8dff"
@@ -145,4 +146,17 @@ QSplitter::handle {{ background: {BORDER}; }}
 QLabel[dim="true"] {{ color: {TEXT_DIM}; font-size: 11px; }}
 QLabel[heading="true"] {{ color: {TEXT_DIM}; font-size: 10px; font-weight: 700;
                           letter-spacing: 1px; }}
+"""
+
+STYLESHEET += f"""
+/* ---- custom window frame ---- */
+QMainWindow#appWindow {{ border: 1px solid #30363f; }}
+QMainWindow#appWindow[maxed="true"] {{ border: none; }}
+QWidget#titleBar {{ background: {TITLEBAR}; border-bottom: 1px solid {BORDER}; }}
+QLabel#titleTitle {{ color: {TEXT_DIM}; font-size: 12px; background: transparent; }}
+QMenuBar#titleMenuBar {{ background: transparent; border: none; padding: 0; }}
+QMenuBar#titleMenuBar::item {{ padding: 5px 10px; border-radius: 5px;
+                               background: transparent; color: {TEXT}; }}
+QMenuBar#titleMenuBar::item:selected {{ background: {BG_ACTIVE}; }}
+QMenuBar#titleMenuBar::item:pressed {{ background: {ACCENT_DIM}; }}
 """

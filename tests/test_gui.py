@@ -376,6 +376,97 @@ def main():
     assert win3.doc.measure_size() > result["after"] * 2, "undo did not restore"
     print("undo after compress restores the original: ok")
 
+    # ---------------------------------------------------- custom window frame
+    from pdfstudio.titlebar import position_grips, use_custom_frame
+    assert use_custom_frame(), "custom frame should be the default off macOS"
+    assert win.use_custom_frame and win.title_bar is not None
+    assert bool(win.windowFlags() & Qt.FramelessWindowHint), "window is not frameless"
+    assert len(win.grips) == 8, "expected eight resize grips"
+    titles = [a.text() for a in win.menu_bar.actions()]
+    assert titles == ["&File", "&Edit", "&Tools", "&Pages", "&Document",
+                      "&View", "&Help"], titles
+    print("custom frame: frameless window, menus in the title bar: ok")
+
+    # title reflects the document and its modified state
+    win.title_bar.refresh_title()
+    assert "PDF Studio" in win.title_bar._full_title
+    win.doc.dirty = True
+    win._sync_ui()
+    assert "●" in win.title_bar._full_title, win.title_bar._full_title
+    win.doc.dirty = False
+    win._sync_ui()
+    assert "●" not in win.title_bar._full_title
+    print("title bar shows the modified dot: ok")
+
+    # maximise toggle + button glyph state + grip visibility
+    win.title_bar.toggle_max_restore()
+    pump(150)
+    assert win.isMaximized(), "toggle did not maximise"
+    assert win.title_bar.btn_max.restore_mode, "max button did not flip to restore"
+    assert all(not g.isVisible() for g in win.grips), "grips visible while maximised"
+    win.title_bar.toggle_max_restore()
+    pump(150)
+    assert not win.isMaximized()
+    assert not win.title_bar.btn_max.restore_mode
+    assert all(g.isVisible() for g in win.grips), "grips hidden after restore"
+    print("maximise/restore via the custom button: ok")
+
+    # grips hug the window edges after a resize
+    win.resize(1100, 760)
+    pump(120)
+    position_grips(win, win.grips)
+    right = next(g for g in win.grips if g.edges == Qt.RightEdge
+                 and not (g.edges & Qt.TopEdge) and not (g.edges & Qt.BottomEdge))
+    assert abs((right.x() + right.width()) - win.width()) <= 1, \
+        f"right grip not on the edge: {right.geometry()} vs width {win.width()}"
+    print("resize grips track the window edges: ok")
+
+    # manual resize fallback (the path used when startSystemResize is refused)
+    os.environ["PDFSTUDIO_FORCE_MANUAL_RESIZE"] = "1"
+    try:
+        start_w = win.width()
+        grip_centre = right.rect().center()
+        gpos = right.mapToGlobal(grip_centre)
+        press = QMouseEvent(QEvent.MouseButtonPress, QPointF(grip_centre),
+                            QPointF(gpos), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        QApplication.sendEvent(right, press)
+        move = QMouseEvent(QEvent.MouseMove, QPointF(grip_centre.x() + 90, grip_centre.y()),
+                           QPointF(gpos.x() + 90, gpos.y()),
+                           Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        QApplication.sendEvent(right, move)
+        release = QMouseEvent(QEvent.MouseButtonRelease, QPointF(grip_centre),
+                              QPointF(gpos.x() + 90, gpos.y()),
+                              Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+        QApplication.sendEvent(right, release)
+        pump(120)
+        assert win.width() >= start_w + 80, \
+            f"manual resize fallback did not grow the window: {start_w} -> {win.width()}"
+        print(f"manual edge-resize fallback ({start_w} -> {win.width()}px): ok")
+    finally:
+        os.environ.pop("PDFSTUDIO_FORCE_MANUAL_RESIZE", None)
+
+    # close button actually closes (clean document, no prompt)
+    probe = MainWindow()
+    probe.show()
+    pump(100)
+    assert probe.title_bar is not None
+    probe.title_bar.btn_close.click()
+    pump(150)
+    assert not probe.isVisible(), "close button did not close the window"
+    print("close button closes the window: ok")
+
+    # the escape hatch restores the native frame
+    os.environ["PDFSTUDIO_NATIVE_FRAME"] = "1"
+    try:
+        native = MainWindow()
+        assert not native.use_custom_frame and native.title_bar is None
+        assert not bool(native.windowFlags() & Qt.FramelessWindowHint)
+        assert native.menuBar() is native.menu_bar, "native mode lost the menu bar"
+        native.close()
+    finally:
+        os.environ.pop("PDFSTUDIO_NATIVE_FRAME", None)
+    print("PDFSTUDIO_NATIVE_FRAME escape hatch: ok")
+
     if shot:
         win.set_tool(Tool.EDIT_TEXT)
         pump(400)
