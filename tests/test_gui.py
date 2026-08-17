@@ -8,6 +8,9 @@ import os
 import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# The custom window frame defaults off on macOS (deliberate policy). Force it
+# on for the test run so the frame is exercised identically on every CI OS.
+os.environ["PDFSTUDIO_NATIVE_FRAME"] = "0"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -377,8 +380,14 @@ def main():
     print("undo after compress restores the original: ok")
 
     # ---------------------------------------------------- custom window frame
+    import sys as _sys
     from pdfstudio.titlebar import position_grips, use_custom_frame
-    assert use_custom_frame(), "custom frame should be the default off macOS"
+    assert use_custom_frame(), "env override should force the custom frame"
+    # the platform policy itself, checked as pure logic (no window needed):
+    _forced = os.environ.pop("PDFSTUDIO_NATIVE_FRAME")
+    assert use_custom_frame() == (_sys.platform != "darwin"), \
+        "default should be custom frame everywhere except macOS"
+    os.environ["PDFSTUDIO_NATIVE_FRAME"] = _forced
     assert win.use_custom_frame and win.title_bar is not None
     assert bool(win.windowFlags() & Qt.FramelessWindowHint), "window is not frameless"
     assert len(win.grips) == 8, "expected eight resize grips"
@@ -464,7 +473,7 @@ def main():
         assert native.menuBar() is native.menu_bar, "native mode lost the menu bar"
         native.close()
     finally:
-        os.environ.pop("PDFSTUDIO_NATIVE_FRAME", None)
+        os.environ["PDFSTUDIO_NATIVE_FRAME"] = "0"
     print("PDFSTUDIO_NATIVE_FRAME escape hatch: ok")
 
     if shot:
